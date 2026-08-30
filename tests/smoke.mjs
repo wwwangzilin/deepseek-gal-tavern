@@ -303,6 +303,67 @@ storage.set('dsg_active_character', JSON.stringify(injectChar))
   const sent2 = JSON.parse(capturedInit.body)
   assert(sent2.prompt === '原样', '注入开关关闭后请求原样透传')
   assert(capturedInit !== null, '注入关闭时仍拦截流（保证舞台能收到回复）')
+
+  // 强制注入：后续消息（非首条）也携带完整角色卡
+  storeI.setItem('dsg_inject_prompt', '1')
+  capturedInit = null
+  await winI.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: '第二轮消息', chat_session_id: 's4', parent_message_id: 'm1' }),
+  })
+  const sent3 = JSON.parse(capturedInit.body)
+  assert(sent3.prompt.includes('你是「雾子」'), '后续消息仍强制注入角色卡（非首条）')
+  assert(sent3.prompt.includes('以下是玩家本次输入'), '注入包含玩家输入块')
+
+  // 情感总结注入：预置情感总结后，prompt 应包含调节指令
+  storageI.set('dsg_emotion_summary', JSON.stringify({ text: '玩家情绪：焦虑\n对话基调：紧张\n调节建议：温柔安抚' }))
+  capturedInit = null
+  await winI.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: '我有点慌', chat_session_id: 's5' }),
+  })
+  const sent4 = JSON.parse(capturedInit.body)
+  assert(sent4.prompt.includes('【当前情感状态'), '情感总结注入 prompt（调节情感）')
+  assert(sent4.prompt.includes('玩家情绪：焦虑'), '情感总结内容进入 prompt')
+
+  // 情感总结请求通道：content 发 REQUEST_SUMMARY → main world 发起总结 fetch
+  storageI.delete('dsg_emotion_summary')
+  let summaryFetchCalled = false
+  const winSum = {}
+  const msgsSum = []
+  winSum.localStorage = storeI
+  winSum.postMessage = (m) => msgsSum.push(m)
+  winSum.addEventListener = (type, fn) => {
+    if (type === 'message') winSum._msgHandler = fn
+  }
+  winSum.__dsgInstalled = false
+  winSum.fetch = (input, init) => {
+    if (String(input).includes('completion')) {
+      summaryFetchCalled = true
+      const body = JSON.parse(init.body)
+      assert(body.thinking_enabled === false, '总结请求使用非思考快速模式')
+      assert(body.prompt.includes('对话情感分析师'), '总结 prompt 正确')
+      return Promise.resolve(new Response(
+        'data: {"v":"玩家情绪：平静"}\n\ndata: {"p":"response/status","v":"FINISHED"}\n\n',
+        { status: 200 },
+      ))
+    }
+    return Promise.resolve(new Response('{}', { status: 200 }))
+  }
+  winSum.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  const codeSum = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
+    codeSum)(winSum, { readyState: 'complete', addEventListener: () => {} }, storeI, console,
+      class { open() {} send() {} addEventListener() {} },
+      winSum.fetch)
+
+  await winSum._msgHandler({ data: { source: 'dsg-content', type: 'REQUEST_SUMMARY', dialogue: '玩家：我有点慌\n雾子：别怕' } })
+  // 等总结 fetch 完成
+  await new Promise((r) => setTimeout(r, 50))
+  assert(summaryFetchCalled, 'REQUEST_SUMMARY 触发总结请求')
+  const emo = storageI.get('dsg_emotion_summary')
+  assert(emo !== undefined && emo.includes('平静'), '总结结果写入 localStorage')
+  assert(msgsSum.some((m) => m.type === 'EMOTION_SUMMARY'), 'EMOTION_SUMMARY 已广播')
 }
 
 console.log('== SSE 解析（通过响应流）==')
@@ -400,59 +461,116 @@ const fakeJsonResponse = new Response(
   assert(done[0]?.data?.text === '你好，雾子', '完成事件携带全文')
 }
 
-// fragments 格式（DeepSeek 新版正文，含思考片段应被过滤 + 阶段状态机）
-const fakeFragmentsWithThinkResponse = new Response(
+// 真实样本复现：ds2api 逆向确认的 DeepSeek 流格式
+// 思考阶段：初始化 envelope 带 THINK fragment + 无路径思考 token
+// 正文开始：{"p":"response/fragments","o":"APPEND","v":[{type:"RESPONSE",content:"..."}]}
+// 正文阶段：无路径 token 继续追加
+const fakeRealFormatResponse = new Response(
   new ReadableStream({
     start(c) {
-      // 思考阶段：status REASONING + THINK 片段
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"REASONING"}\n\n'))
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"（内心：这题要仔细想想）","type":"THINK"}]}\n\n'))
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"不该被显示","type":"THINK"}]}\n\n'))
-      // 回复阶段：status REPLYING + 正文
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"REPLYING"}\n\n'))
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"你好","type":"text"}]}\n\n'))
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"，我是雾子","type":"text"}]}\n\n'))
-      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"FINISHED"}\n\n'))
+      // 初始化 envelope：fragments 里是 THINK
+      c.enqueue(new TextEncoder().encode('data: {"v":{"response":{"message_id":2,"status":"WIP","fragments":[{"id":2,"type":"THINK","content":"（内心开始思考）","elapsed_secs":null}]}}}\n\n'))
+      // 思考阶段的 fragments/-1/content 追加
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments/-1/content","o":"APPEND","v":"这个题要仔细想想"}\n\n'))
+      // 思考阶段的无路径 token（真实格式思考正文走这里！）
+      c.enqueue(new TextEncoder().encode('data: {"v":"先分析用户意图"}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"v":"再组织回答结构"}\n\n'))
+      // 正文开始：RESPONSE fragment 出现
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"id":3,"type":"RESPONSE","content":"你好"}]}\n\n'))
+      // 正文阶段的无路径 token
+      c.enqueue(new TextEncoder().encode('data: {"v":"，我是雾子"}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"v":"今天想聊什么"}\n\n'))
+      // 结尾 TIP 提示（不应渲染）
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","v":[{"id":4,"type":"TIP","content":"本回答由 AI 生成"}]}\n\n'))
+      // 终态
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","o":"SET","v":"FINISHED"}\n\n'))
       c.close()
     },
   }),
   { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
 )
 
-// fragments 格式（DeepSeek 新版正文）
+// 真实格式测试：思考 token 全部被过滤，只留 RESPONSE fragment 后的正文
 {
-  const winF = {}
-  const storageF = new Map()
-  const storeF = {
-    getItem: (k) => storageF.has(k) ? storageF.get(k) : null,
-    setItem: (k, v) => storageF.set(k, String(v)),
+  const winR = {}
+  const storageR = new Map()
+  const storeR = {
+    getItem: (k) => storageR.has(k) ? storageR.get(k) : null,
+    setItem: (k, v) => storageR.set(k, String(v)),
   }
-  storeF.setItem('dsg_active_character', JSON.stringify({ id: 'c1', name: '雾子' }))
-  const msgsF = []
-  const winFObj = {
-    localStorage: storeF,
-    postMessage: (m) => msgsF.push(m),
+  storeR.setItem('dsg_active_character', JSON.stringify({ id: 'c1', name: '雾子' }))
+  const msgsR = []
+  const winRObj = {
+    localStorage: storeR,
+    postMessage: (m) => msgsR.push(m),
     addEventListener: () => {},
     __dsgInstalled: false,
-    fetch: () => Promise.resolve(fakeFragmentsWithThinkResponse),
+    fetch: () => Promise.resolve(fakeRealFormatResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
-  const codeF = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  const codeR = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
-    codeF)(winFObj, { readyState: 'complete', addEventListener: () => {} }, storeF, console,
+    codeR)(winRObj, { readyState: 'complete', addEventListener: () => {} }, storeR, console,
       class { open() {} send() {} addEventListener() {} },
-      () => Promise.resolve(fakeFragmentsWithThinkResponse))
+      () => Promise.resolve(fakeRealFormatResponse))
 
-  const respF = await winFObj.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+  const respR = await winRObj.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
     method: 'POST',
     body: JSON.stringify({ prompt: '你好', chat_session_id: 's1' }),
   })
-  await respF.text()
-  const fullF = msgsF.filter((m) => m.type === 'STREAM_TEXT').map((m) => m.data.text).join('')
-  assert(fullF === '你好，我是雾子', 'fragments 正文聚合且 THINK 思考片段被过滤', `got: ${fullF}`)
-  assert(!fullF.includes('内心'), '思考内容未混入台词')
-  assert(msgsF.some((m) => m.type === 'RESPONSE_COMPLETE'), 'fragments 流完成事件已广播')
-  assert(msgsF.some((m) => m.type === 'THINKING'), '思考片段触发 THINKING 广播')
+  await respR.text()
+
+  const textsR = msgsR.filter((m) => m.type === 'STREAM_TEXT').map((m) => m.data.text).join('')
+  const thinkMsgs = msgsR.filter((m) => m.type === 'THINKING')
+  assert(textsR === '你好，我是雾子今天想聊什么', '真实格式：只保留 RESPONSE 后的正文', `got: ${textsR}`)
+  assert(!textsR.includes('思考') && !textsR.includes('分析') && !textsR.includes('AI 生成'), '思考 token 与 TIP 未混入')
+  assert(thinkMsgs.length >= 1, '思考阶段触发了 THINKING 广播')
+  assert(msgsR.some((m) => m.type === 'RESPONSE_COMPLETE'), '真实格式流完成')
+}
+
+// 非思考模式（thinking_enabled=false）：也应正确处理（无 THINK fragment 时正文直接输出）
+const fakeNoThinkingResponse = new Response(
+  new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('data: {"v":{"response":{"message_id":2,"status":"WIP","fragments":[{"id":3,"type":"RESPONSE","content":"直接回答"}]}}}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"v":"，没有思考过程"}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","o":"SET","v":"FINISHED"}\n\n'))
+      c.close()
+    },
+  }),
+  { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+)
+
+{
+  const winN = {}
+  const storageN = new Map()
+  const storeN = {
+    getItem: (k) => storageN.has(k) ? storageN.get(k) : null,
+    setItem: (k, v) => storageN.set(k, String(v)),
+  }
+  storeN.setItem('dsg_active_character', JSON.stringify({ id: 'c1', name: '雾子' }))
+  const msgsN = []
+  const winNObj = {
+    localStorage: storeN,
+    postMessage: (m) => msgsN.push(m),
+    addEventListener: () => {},
+    __dsgInstalled: false,
+    fetch: () => Promise.resolve(fakeNoThinkingResponse),
+    XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
+  }
+  const codeN = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
+    codeN)(winNObj, { readyState: 'complete', addEventListener: () => {} }, storeN, console,
+      class { open() {} send() {} addEventListener() {} },
+      () => Promise.resolve(fakeNoThinkingResponse))
+
+  const respN = await winNObj.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: 'hi', chat_session_id: 's1' }),
+  })
+  await respN.text()
+  const fullN = msgsN.filter((m) => m.type === 'STREAM_TEXT').map((m) => m.data.text).join('')
+  assert(fullN === '直接回答，没有思考过程', '无思考模式：RESPONSE 起始即正文', `got: ${fullN}`)
 }
 
 // 无空行分隔的残留 SSE（流结束兜底）

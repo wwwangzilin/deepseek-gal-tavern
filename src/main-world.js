@@ -77,6 +77,12 @@
     if (char.exampleDialogue) parts.push(`【示例对话】\n${char.exampleDialogue}`)
     if (char.systemPrompt) parts.push(char.systemPrompt)
 
+    // 情感调节（需求 #3）：读取最近的对话情感总结，指导角色回应基调
+    const emotion = readEmotionSummary()
+    if (emotion) {
+      parts.push(`【当前情感状态（每 60 秒自动总结，用于调节你的回应）】\n${emotion}\n请根据以上玩家情绪与对话基调，自然调整你的回应语气与内容：玩家情绪低落时温柔安抚，开心时共享喜悦，愤怒时先降温不争执，焦虑时给予安心。`)
+    }
+
     parts.push('每次回复都自然、口语化，用短句推进剧情；只输出台词与动作，不要输出旁白标签。')
     return parts.join('\n\n')
   }
@@ -91,7 +97,128 @@
     return `${system}\n\n---\n\n${renderUserInputBlock(original)}`
   }
 
-  // ── 请求体改写 ────────────────────────────────────────────────────
+  // ── 情感总结（需求 #3：快速模式每 60s 总结对话，调节情感）────────
+  // 用非思考快速模式发起独立总结请求（不污染页面会话），结果存 localStorage，
+  // 下次注入 prompt 时作为「情感调节」附加到角色系统提示词。
+  const SUMMARY_STORAGE_KEY = 'dsg_emotion_summary'
+  const SUMMARY_PROMPT = [
+    '你是对话情感分析师。请阅读以下角色扮演对话，用一句话总结：',
+    '1. 玩家当前的情绪状态（开心/难过/愤怒/焦虑/平静/期待…）；',
+    '2. 对话当前的情感基调；',
+    '3. 角色（AI）应如何调整回应来匹配或安抚玩家情绪。',
+    '输出格式（严格三行，不要多余内容）：',
+    '玩家情绪：<词>',
+    '对话基调：<一句话>',
+    '调节建议：<一句话>',
+    '',
+    '对话内容：',
+  ].join('\n')
+
+  function readEmotionSummary() {
+    try {
+      const raw = localStorage.getItem(SUMMARY_STORAGE_KEY)
+      if (raw === null) return ''
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed.text === 'string' ? parsed.text : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function writeEmotionSummary(text) {
+    try {
+      localStorage.setItem(SUMMARY_STORAGE_KEY, JSON.stringify({
+        text,
+        ts: Date.now(),
+      }))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 独立总结请求：走原始 fetch（绕过自身 hook），带 token，thinking_enabled=false
+  async function requestSummary(dialogueText) {
+    try {
+      const tokenRaw = localStorage.getItem('userToken')
+      let token = ''
+      if (tokenRaw) {
+        try {
+          const parsed = JSON.parse(tokenRaw)
+          token = typeof parsed === 'string' ? parsed : (parsed && parsed.value) || ''
+        } catch {
+          token = tokenRaw
+        }
+      }
+      const headers = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = 'Bearer ' + token
+      const body = {
+        prompt: SUMMARY_PROMPT + dialogueText,
+        thinking_enabled: false,
+        chat_session_id: null,
+        parent_message_id: null,
+        model_type: 'fast',
+      }
+      const resp = await window.fetch('/api/v0/chat/completion', {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify(body),
+      })
+      const rawText = await resp.text()
+      // 解析 SSE 或 JSON：提取正文（快速模式通常直接输出文本）
+      const text = parseSummaryResponse(rawText)
+      if (text && text.trim()) {
+        writeEmotionSummary(text.trim())
+        broadcast('EMOTION_SUMMARY', { text: text.trim() })
+        return text.trim()
+      }
+      return ''
+    } catch (err) {
+      return ''
+    }
+  }
+
+  function parseSummaryResponse(raw) {
+    if (!raw) return ''
+    // 无 data: 前缀的普通 JSON
+    if (!raw.includes('data:')) {
+      try {
+        const json = JSON.parse(raw)
+        const t = extractTextFromJson(json)
+        if (t) return t
+      } catch {
+        /* ignore */
+      }
+    }
+    // SSE：按行解析 data: 事件，累积正文
+    let out = ''
+    const lines = raw.split('\n')
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue
+      const data = line.slice(5).trim()
+      if (!data || data === '[DONE]') continue
+      try {
+        const parsed = JSON.parse(data)
+        if (parsed === null || typeof parsed !== 'object') continue
+        // 快速模式：无 THINK，直接取 v 字符串 / fragments content
+        if (typeof parsed.v === 'string' && parsed.p !== 'response/status') out += parsed.v
+        else if (Array.isArray(parsed.v)) {
+          for (const item of parsed.v) {
+            if (typeof item === 'string') out += item
+            else if (item && typeof item === 'object') {
+              if (typeof item.content === 'string') out += item.content
+              else if (typeof item.v === 'string') out += item.v
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return out
+  }
+
+  // ── 请求体改写（借鉴 deepseek++：每次对话强制注入角色系统提示词）──
   function modifyRequestBody(bodyStr) {
     let body
     try {
@@ -108,11 +235,16 @@
       lastChatSessionId = body.chat_session_id
     }
 
-    if (!isEnabled() || !isInjectOn()) return null
+    // 插件总开关关闭 → 不注入
+    if (!isEnabled()) return null
+    // 角色注入开关关闭 → 不注入（仅保留流拦截）
+    if (!isInjectOn()) return null
 
     const char = getActiveCharacter()
     if (char === null) return null
 
+    // 强制注入：每条消息（首条/后续）都携带完整角色系统提示词，
+    // 确保模型始终以角色身份回应，不随对话轮次稀释。
     body.prompt = buildPrompt(originalPrompt, char)
     lastPrompt = body.prompt
     return JSON.stringify(body)
@@ -274,72 +406,136 @@
     }
   }
 
-  // ── 阶段状态机：思考/回复阶段跟踪 ────────────────────────────────
-  // DeepSeek 流里 status 事件带阶段值（如 REASONING / REPLYING / FINISHED 等），
-  // 我们只在「正式回复」阶段放行文本，思考阶段只广播 THINKING 指示。
+  // ── 阶段状态机（基于真实样本的 fragment 类型分界）──────────────
+  // 真实格式（ds2api 逆向样本确认）：
+  //   1. 初始化 envelope：{"v":{"response":{...,"fragments":[{type:"THINK",content:"思考"}]}}}
+  //   2. 思考阶段：无路径 token {"v":"思考token"} + {"p":"response/fragments/-1/content","o":"APPEND","v":"..."}
+  //   3. 正文开始：{"p":"response/fragments","o":"APPEND","v":[{type:"RESPONSE",content:"正文起始"}]}
+  //   4. 正文阶段：无路径 token {"v":"正文token"} 继续追加
+  //   5. TIP 类型是提示（不渲染）；终态 status/quasi_status 是控制信号
+  // 分界信号：出现 type==="RESPONSE" 的 fragment 之前，所有文本都是思考内容。
   function updatePhase(parsed, phase) {
     if (parsed === null || typeof parsed !== 'object') return
     if (Array.isArray(parsed)) {
       for (const item of parsed) updatePhase(item, phase)
       return
     }
-    // status 事件：{"p":"response/status","v":"REASONING"} / "REPLYING" / "FINISHED"
     const path = typeof parsed.p === 'string' ? parsed.p : ''
-    if (path.endsWith('/status') || path === 'status' || path.includes('status')) {
-      const v = typeof parsed.v === 'string' ? parsed.v.toUpperCase() : ''
-      if (/REASON|THINK|COGIT|THOUGHT/.test(v)) phase.value = 'thinking'
-      else if (/REPLY|ANSWER|CONTENT|RESPOND|GENERAT|STREAM|FINISHED|DONE/.test(v)) phase.value = 'replying'
-      else if (v === 'FINISHED' || v === 'DONE') phase.value = 'replying'
+    // 老版正文路径：{"p":"response/content",...} 本身就是正文信号
+    if (path === 'response/content' || path === 'content') {
+      phase.sawResponse = true
+      phase.lastType = 'RESPONSE'
       return
     }
-    // reasoning 路径/类型 → 思考阶段
-    if (isReasoning(parsed)) {
-      phase.value = 'thinking'
-      return
-    }
-  }
-
-  /** 阶段判断：当前事件是否属于正式回复（放行文本） */
-  function inReplyPhase(parsed, phase) {
-    // 显式阶段已锁定
-    if (phase.value === 'replying') return true
-    if (phase.value === 'thinking') {
-      // 思考阶段：正文路径/类型明确是回复的才放行（防御误判）
-      const path = typeof parsed.p === 'string' ? parsed.p : ''
-      if (path.endsWith('/content') && !/(reason|think|thought|quasi)/i.test(path)) return true
-      if (path.endsWith('/fragments')) {
-        return hasReplyFragment(parsed)
+    // 初始化 envelope：{"v":{"response":{"fragments":[{type,...}]}}}
+    const env = parsed.v && typeof parsed.v === 'object' && parsed.v.response
+      ? parsed.v.response
+      : null
+    if (env && env !== null && typeof env === 'object') {
+      if (Array.isArray(env.fragments)) {
+        for (const f of env.fragments) {
+          if (f && typeof f === 'object') {
+            const t = typeof f.type === 'string' ? f.type.toUpperCase() : ''
+            if (t === 'RESPONSE') phase.sawResponse = true
+            if (t === 'THINK') phase.sawThinking = true
+            if (t) phase.lastType = t
+          }
+        }
       }
-      return false
+      return
     }
-    // 未知阶段：按路径/类型特征判断
-    const path = typeof parsed.p === 'string' ? parsed.p : ''
-    if (/(reason|think|thought|quasi)/i.test(path)) return false
-    if (path.endsWith('/fragments')) return hasReplyFragment(parsed)
-    if (path.endsWith('/content')) return true
-    return !isReasoning(parsed) && !isThinkingBlock(parsed)
+    // fragments 事件（APPEND 或整体 SET）：{"p":"response/fragments","o":"APPEND"|"SET"|...,"v":[{type,...}]}
+    if ((path === 'response/fragments' || path === 'fragments') && Array.isArray(parsed.v)) {
+      for (const f of parsed.v) {
+        if (f && typeof f === 'object') {
+          const t = typeof f.type === 'string' ? f.type.toUpperCase() : ''
+          if (t === 'RESPONSE') phase.sawResponse = true
+          if (t === 'THINK') phase.sawThinking = true
+          if (t) phase.lastType = t
+        }
+      }
+      return
+    }
   }
 
-  /** fragments 数组里是否存在正式回复片段（type=text/response 等） */
-  function hasReplyFragment(parsed) {
-    if (Array.isArray(parsed.v)) {
-      return parsed.v.some((f) => f && typeof f === 'object' && isReplyFragment(f))
-    }
-    return false
-  }
-
-  /** 单个片段是否属于正式回复：带 type 必须命中正文白名单，无 type 视为正文 */
+  /** 单个 fragment 是否属于正文（RESPONSE 或正文白名单） */
   function isReplyFragment(frag) {
     if (frag === null || typeof frag !== 'object') return false
     const type = typeof frag.type === 'string' ? frag.type.toUpperCase() : ''
     if (type) {
-      // 明确是思考/提示类 → 非正文
-      if (/^(THINK|TIP|REASON|REASONING|THOUGHT|COGIT|INTERNAL)/.test(type)) return false
-      // 其余带 type 的：只认正文白名单，未知类型一律不放行（防思考新类型混入）
-      return /^(TEXT|CONTENT|RESPONSE|ANSWER|REPLY|NORMAL|PARAGRAPH)$/.test(type)
+      if (/^(THINK|TIP|REASON|REASONING|THOUGHT|COGIT|INTERNAL|TOOL_)/.test(type)) return false
+      return /^(RESPONSE|TEXT|CONTENT|ANSWER|REPLY|NORMAL|PARAGRAPH|TEMPLATE_RESPONSE)$/.test(type)
     }
-    // 无 type：有正文内容即视为回复
+    // 无 type：有正文内容即视为正文（兼容旧格式）
     return typeof frag.content === 'string' && frag.content.trim() !== ''
+  }
+
+  /** 从一条 JSON-patch 里提取正文文本增量（基于 fragment 类型分界） */
+  function extractText(parsed, phase) {
+    if (parsed === null || typeof parsed !== 'object') return ''
+    // 数组（BATCH 内容）递归
+    if (Array.isArray(parsed)) {
+      let out = ''
+      for (const item of parsed) out += extractText(item, phase)
+      return out
+    }
+    const rec = parsed
+    const path = typeof rec.p === 'string' ? rec.p : ''
+    // 初始化 envelope：{"v":{"response":{"fragments":[{type:"RESPONSE",content:"..."}]}}}
+    // 提取 RESPONSE 类型的初始 content（正文起始），THINK 初始 content 跳过
+    if (rec.v && typeof rec.v === 'object' && rec.v.response && typeof rec.v.response === 'object') {
+      const envFragments = rec.v.response.fragments
+      if (Array.isArray(envFragments)) {
+        let out = ''
+        for (const f of envFragments) {
+          if (isReplyFragment(f) && typeof f.content === 'string') out += f.content
+        }
+        return out
+      }
+      return ''
+    }
+    // 状态/控制路径：不渲染
+    if (/(status|quasi_status|elapsed_secs|accumulated_token|has_pending|ban_regenerate|auto_continue)/.test(path)) return ''
+    // fragments 整体事件：只取正文类型 fragment 的 content
+    if ((path === 'response/fragments' || path === 'fragments') && Array.isArray(rec.v)) {
+      let out = ''
+      for (const f of rec.v) {
+        if (isReplyFragment(f) && typeof f.content === 'string') out += f.content
+      }
+      return out
+    }
+    // 片段级 content 追加：{"p":"response/fragments/-1/content","o":"APPEND","v":"..."}
+    if (/^response\/fragments\/-?\d+\/content$/.test(path)) {
+      // 只有已进入正文阶段（sawResponse）才放行；思考阶段跳过
+      if (!phase.sawResponse) return ''
+      return typeof rec.v === 'string' ? rec.v : ''
+    }
+    // 老版正文路径：{"p":"response/content","o":"APPEND","v":"..."} —— 本身就是正文信号，直接放行
+    if (path === 'response/content' || path === 'content') {
+      return typeof rec.v === 'string' ? rec.v : ''
+    }
+    // 无路径纯 token：{"v":"正文"} —— 分界信号前是思考，之后是正文
+    if (path === '' && typeof rec.v === 'string' && rec.p !== 'response/status') {
+      if (!phase.sawResponse) return '' // 思考 token，丢弃
+      return rec.v
+    }
+    // 路径 /content 直接设置（其它 content 路径，兼容）
+    if (path.endsWith('/content') && typeof rec.v === 'string') {
+      if (!phase.sawResponse) return ''
+      return rec.v
+    }
+    // BATCH 格式：{"o":"BATCH","v":[...]}
+    if (rec.o === 'BATCH' && Array.isArray(rec.v)) return extractText(rec.v, phase)
+    // 兜底：未知结构按正文候选（fragments 数组已处理）
+    if (Array.isArray(rec.v)) {
+      let out = ''
+      for (const item of rec.v) {
+        if (typeof item === 'string') out += item
+        else if (item && typeof item === 'object') out += extractText(item, phase)
+      }
+      return out
+    }
+    return ''
   }
 
   // 调试转储：最近 N 条原始事件，供诊断「思考混入」问题
@@ -362,12 +558,15 @@
   function handleStreamEvent(parsed, phase, url) {
     recordDebugEvent(parsed)
     updatePhase(parsed, phase)
-    if (isReasoning(parsed) && phase.value !== 'replying') {
-      broadcast('THINKING', { chatSessionId: lastChatSessionId })
+    // 思考阶段（已见 THINK 且未见 RESPONSE）→ 丢弃文本，广播一次 THINKING 指示
+    if (phase.sawThinking && !phase.sawResponse) {
+      if (!phase.thinkingNotified) {
+        phase.thinkingNotified = true
+        broadcast('THINKING', { chatSessionId: lastChatSessionId })
+      }
       return ''
     }
-    if (!inReplyPhase(parsed, phase)) return ''
-    return extractText(parsed)
+    return extractText(parsed, phase)
   }
 
   async function interceptFetchResponse(responsePromise, url) {
@@ -380,8 +579,8 @@
     let fullText = ''
     let remainder = ''
     let completed = false
-    // 阶段状态机：track 思考/回复阶段，只在正式回复阶段收文本
-    const phase = { value: 'unknown' } // 'thinking' | 'replying' | 'unknown'
+    // 阶段状态机：sawResponse=true 之前都是思考内容（真实格式的 RESPONSE fragment 分界）
+    const phase = { sawResponse: false, sawThinking: false, lastType: null }
 
     const finalize = () => {
       if (completed) return
@@ -553,7 +752,7 @@
     let fullText = ''
     let lastLen = 0
     let completed = false
-    const phase = { value: 'unknown' }
+    const phase = { sawResponse: false, sawThinking: false, lastType: null }
 
     const finalize = () => {
       if (completed) return
@@ -647,7 +846,7 @@
     function PatchedEventSource(url, config) {
       const es = new OrigES(url, config)
       if (isChatURL(String(url))) {
-        const phase = { value: 'unknown' }
+        const phase = { sawResponse: false, sawThinking: false, lastType: null }
         es.addEventListener('message', (ev) => {
           try {
             const parsed = JSON.parse(ev.data)
@@ -683,6 +882,14 @@
     Object.defineProperty(window, '__dsgLastPrompt', {
       get: () => lastPrompt,
       configurable: true,
+    })
+
+    // 情感总结请求通道：content.js 每 60s 触发（需求 #3）
+    window.addEventListener('message', (ev) => {
+      if (!ev.data || ev.data.source !== 'dsg-content' || ev.data.type !== 'REQUEST_SUMMARY') return
+      const dialogueText = typeof ev.data.dialogue === 'string' ? ev.data.dialogue : ''
+      if (!dialogueText.trim()) return
+      void requestSummary(dialogueText)
     })
 
     // 广播就绪

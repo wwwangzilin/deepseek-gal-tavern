@@ -1048,6 +1048,59 @@ class GalStage {
   }
 }
 
+// ── 情感总结器（需求 #3：每 60s 快速模式总结对话，调节情感）──────
+const SUMMARY_INTERVAL_MS = 60000
+const SUMMARY_STORAGE_KEY = 'dsg_emotion_summary'
+
+function readEmotionSummary() {
+  try {
+    const raw = localStorage.getItem(SUMMARY_STORAGE_KEY)
+    if (raw === null) return ''
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed.text === 'string' ? parsed.text : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 收集最近对话文本（玩家 + AI，最多 20 条），触发总结 */
+function startEmotionSummarizer(stage) {
+  let lastSummaryTs = 0
+  let lastLineCount = 0
+  let running = false
+
+  const tick = async () => {
+    const now = Date.now()
+    const lineCount = stage.lines.length
+    // 有新增对话且距上次总结 ≥ 60s 才触发
+    if (lineCount === lastLineCount || lineCount === 0 || now - lastSummaryTs < SUMMARY_INTERVAL_MS) {
+      return
+    }
+    if (running) return
+    running = true
+    lastLineCount = lineCount
+    try {
+      const char = getActiveCharacter()
+      const recent = stage.lines.slice(-20)
+      const dialogue = recent.map((l) => {
+        const name = l.kind === 'player' ? '玩家' : (char.name || '角色')
+        return `${name}：${l.text}`
+      }).join('\n')
+      // 通过 postMessage 让 MAIN world 发起快速总结请求
+      window.postMessage({
+        source: 'dsg-content',
+        type: 'REQUEST_SUMMARY',
+        dialogue,
+      }, '*')
+      lastSummaryTs = now
+    } finally {
+      running = false
+    }
+  }
+
+  setInterval(tick, 10000) // 每 10s 检查一次是否满足 60s 间隔
+}
+
 // ── 工具 ───────────────────────────────────────────────────────────
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (ch) => ({
@@ -1065,6 +1118,9 @@ function install() {
   const shadow = host.attachShadow({ mode: 'open' })
 
   const stage = new GalStage(shadow)
+
+  // 情感总结：每 60s 触发一次（需求 #3）
+  startEmotionSummarizer(stage)
 
   // 尺寸变化重算缩放
   if (typeof ResizeObserver !== 'undefined') {
