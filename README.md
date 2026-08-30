@@ -1,0 +1,75 @@
+# DeepSeek GAL 酒馆
+
+把网页版 [DeepSeek](https://chat.deepseek.com) 变成 **Galgame 风格的角色扮演酒馆** 的浏览器插件（Chrome MV3）。
+
+- **gal 界面** 借鉴 [Ayase34/gal-view](https://github.com/Ayase34/gal-view)：16:9 舞台、角色立绘（说话发光）、对话框 + 名牌、打字机效果、台词点击翻页、自动播放、历史面板。
+- **提示词注入** 借鉴 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（DeepSeek++）与二开版 [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek)：在页面 MAIN world 拦截 `fetch`/`XHR`，改写 DeepSeek 对话接口的 `body.prompt`，把「角色卡系统提示词 + 玩家输入」注入每次请求，并解析 SSE 流式响应驱动舞台台词。
+
+## 效果
+
+- 打开 chat.deepseek.com，页面被 Galgame 舞台覆盖：深色夜晚背景 + 角色立绘 + 大对话框 + 打字机台词。
+- 顶部可切换角色卡；输入台词后，DeepSeek 以该角色身份回复，台词逐字打出，点击文本框可翻页/快进。
+- 历史面板保留本会话对话；刷新页面后自动从 DeepSeek 历史接口恢复对话。
+- 角色卡可上传立绘、自定义性格/场景/示例对话/开场白/附加系统指令。
+
+## 安装（开发者模式加载）
+
+1. 下载/克隆本项目到本地目录 `ds-gal-tavern`。
+2. 打开 Chrome（或 Edge），地址栏输入 `chrome://extensions/`（Edge 为 `edge://extensions/`）。
+3. 打开右上角 **开发者模式**。
+4. 点击 **加载已解压的扩展程序**，选择本项目的 `ds-gal-tavern` 目录。
+5. 打开（或刷新）[chat.deepseek.com](https://chat.deepseek.com) 并登录，即可看到 GAL 酒馆舞台。
+
+> 提示：如果加载后舞台没有出现，请刷新页面。插件只在 `chat.deepseek.com` 域名下生效。
+
+## 使用
+
+| 操作 | 说明 |
+| --- | --- |
+| 输入框 | 输入你想说的话，Enter 发送（Shift+Enter 换行） |
+| 点击台词框 | 打字中 → 追平当前页；已打完且有下一页 → 翻页 |
+| 顶部「自动」 | 自动逐页播放台词 |
+| 顶部「历史」 | 查看本会话对话记录 |
+| 顶部「角色」 | 角色卡列表：切换/新建/删除 |
+| 顶部「设置」 | 启用酒馆模式 / 注入角色卡提示词开关 |
+| 编辑角色 | 角色面板 → 点角色卡 → 编辑弹窗（或在列表中新建） |
+| 立绘 | 编辑角色时「上传图片」，支持本地图片（存为 dataURL） |
+
+## 工作原理
+
+```
+玩家输入 → 舞台输入框 → 桥接写入 DeepSeek 原输入框并触发发送
+        → 页面发起 /api/v0/chat/completion 请求
+        → MAIN world 拦截：body.prompt 改写为 [角色卡系统提示词] + [玩家输入]
+        → DeepSeek 流式返回（SSE JSON-patch）
+        → MAIN world 解析文本块 → postMessage 广播
+        → 舞台打字机逐字显示 → 点击翻页
+```
+
+历史恢复：拦截 `/api/v0/chat/history_messages` 响应，解析 `chat_messages` 广播为舞台历史。
+
+## 项目结构
+
+```
+ds-gal-tavern/
+├── manifest.json          # MV3 清单
+├── icons/                 # 插件图标
+└── src/
+    ├── main-world.js      # MAIN world：fetch/XHR 拦截、prompt 注入、SSE 解析、历史广播
+    ├── styles.js          # 舞台样式（Shadow DOM 内注入，window.GAL_CSS）
+    └── content.js         # ISOLATED world：Galgame 舞台 UI、角色卡管理、输入桥接
+```
+
+## 说明与限制
+
+- 插件以**覆盖层**方式叠加在 DeepSeek 页面之上（Shadow DOM 隔离样式），不修改页面本身；关闭插件开关即恢复原页面。
+- 注入只改写每次请求的 `prompt` 字段，不触碰登录态、会话 ID 等敏感字段。
+- 输入桥接依赖 DeepSeek 页面的 `<textarea>` 输入框与发送按钮；若 DeepSeek 改版导致找不到输入框，控制台会提示，等待适配。
+- 立绘与角色卡数据存于浏览器 localStorage（域名 `chat.deepseek.com` 下），卸载插件不丢失。
+- 使用前请确认 DeepSeek 账号已登录且有可用会话。
+
+## 参考项目
+
+- [Ayase34/gal-view](https://github.com/Ayase34/gal-view) — DSH 会话页 Galgame 视图（界面借鉴）
+- [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp) — DeepSeek++（提示词注入机制借鉴）
+- [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek) — DeepSeek++ 二开（拦截实现参考）

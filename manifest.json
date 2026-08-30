@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek GAL 酒馆",
+  "version": "1.1.0",
+  "description": "把网页版 DeepSeek 变成 Galgame 风格的角色扮演酒馆：gal 界面（立绘/打字机/台词分页），提示词注入借鉴 DeepSeek++ 机制。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://chat.deepseek.com/*"],
+      "js": ["src/main-world.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://chat.deepseek.com/*"],
+      "js": ["src/styles.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*.png"],
+      "matches": ["*://chat.deepseek.com/*"]
+    }
+  ],
+  "permissions": []
+}
