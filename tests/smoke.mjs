@@ -856,5 +856,69 @@ console.log('== main-world：skill 注入 + 工具调用流过滤 ==')
   assert(toolCalls[0].data.call.payload.field === 'personality', '工具 payload 正确')
 }
 
+console.log('== core 模块（记忆/预设/工具/权重）==')
+{
+  // 用内存 storage 模拟 chrome.storage.local
+  const memStore = new Map()
+  const fakeStorage = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore.set(key, value),
+    removeValue: async (key) => memStore.delete(key),
+  }
+  // 共享同一个 fake global，让模块之间能互相看到
+  const fakeGlobal = {
+    Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp,
+    DSG_STORAGE: fakeStorage,
+  }
+  fakeGlobal.globalThis = fakeGlobal
+  function loadCore(name) {
+    const code = readFileSync(join(root, 'src', 'core', name), 'utf8')
+    new Function('globalThis', 'Intl', 'crypto', 'console', code)(fakeGlobal, Intl, crypto, console)
+  }
+
+  loadCore('weighting.js')
+  loadCore('memory.js')
+  assert(fakeGlobal.DSG_MEMORY && typeof fakeGlobal.DSG_MEMORY.saveMemory === 'function', 'DSG_MEMORY 已挂载')
+
+  // 保存记忆
+  await fakeGlobal.DSG_MEMORY.saveMemory({ type: 'user', name: '主人职业', content: '前端开发工程师', tags: ['前端'], pinned: false })
+  await fakeGlobal.DSG_MEMORY.saveMemory({ type: 'topic', name: '小说设定', content: '主角叫林雾', tags: ['小说'] })
+  const all = await fakeGlobal.DSG_MEMORY.getAllMemories()
+  assert(all.length === 2, '记忆保存成功')
+  assert(all[0].scope === 'permanent', 'user 类型默认 permanent 层级')
+
+  // 注入选择：关键词匹配应优先
+  const sel = await fakeGlobal.DSG_MEMORY.selectMemoriesForPrompt('前端工作怎么样', { memories: all })
+  assert(sel.selected.length >= 1, '记忆注入选择出条目')
+  assert(sel.block.includes('主人职业') || sel.block.includes('前端'), '关键词匹配优先注入相关记忆', sel.block)
+
+  // 预设模块
+  loadCore('presets.js')
+  await fakeGlobal.DSG_PRESET.savePreset({ id: 'p1', name: '助手模式', content: '你是一位专业助手', createdAt: Date.now() })
+  await fakeGlobal.DSG_PRESET.setActivePresetId('p1')
+  const active = await fakeGlobal.DSG_PRESET.getActivePreset()
+  assert(active && active.id === 'p1', '预设激活生效')
+
+  // 工具模块
+  loadCore('tools.js')
+  const calls = fakeGlobal.DSG_TOOL.extractToolCalls('回复<memory_save>{"type":"user","name":"测试","content":"内容","tags":[]}</memory_save>完毕')
+  assert(calls.length === 1 && calls[0].name === 'memory_save', '工具解析正确')
+  const stripped = fakeGlobal.DSG_TOOL.stripToolCalls('正文<memory_save>{"type":"user"}</memory_save>尾部')
+  assert(stripped === '正文尾部', '工具剥离正确', stripped)
+
+  // 工具执行：memory_save 真实写入
+  const result = await fakeGlobal.DSG_TOOL.executeLocalToolCall({
+    name: 'memory_save',
+    payload: { type: 'topic', name: '工具测试', content: '通过工具保存', tags: ['测试'] },
+  })
+  assert(result.ok === true, 'memory_save 工具执行成功')
+  const after = await fakeGlobal.DSG_MEMORY.getAllMemories()
+  assert(after.length === 3, '工具保存后记忆 +1')
+}
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`)
 process.exit(failed > 0 ? 1 : 0)

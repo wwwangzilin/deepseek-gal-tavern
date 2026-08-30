@@ -90,6 +90,10 @@
   /** 已有记忆（deepseek++ 结构：### 已有记忆 列表） */
   function buildMemoriesBlock() {
     try {
+      // 优先用后台同步的完整记忆（deepseek++ 完整功能）
+      const injected = buildInjectedMemoriesBlock()
+      if (injected) return injected
+      // 回退旧版 localStorage 记忆
       const list = readJSON('dsg_memories', [])
       if (!Array.isArray(list) || list.length === 0) return ''
       const lines = list.slice(-12).map((m, i) => {
@@ -103,6 +107,11 @@
     } catch {
       return ''
     }
+  }
+
+  /** 系统提示词预设（deepseek++ 完整功能：激活的预设注入） */
+  function buildPresetBlock() {
+    return buildInjectedPresetBlock()
   }
 
   function buildCharacterSystemPrompt(char) {
@@ -129,6 +138,10 @@
     // 已有记忆（deepseek++ 结构）
     const memories = buildMemoriesBlock()
     if (memories) parts.push(memories)
+
+    // 激活的系统提示词预设（deepseek++ 完整功能）
+    const preset = buildPresetBlock()
+    if (preset) parts.push(preset)
 
     // 工具 schema（借鉴 deepseek++：memory_save 记忆 + character_learn 角色学习）
     const tools = toolSchemasBlock()
@@ -1069,14 +1082,81 @@
 
     // 情感总结请求通道：content.js 每 60s 触发（需求 #3）
     window.addEventListener('message', (ev) => {
-      if (!ev.data || ev.data.source !== 'dsg-content' || ev.data.type !== 'REQUEST_SUMMARY') return
-      const dialogueText = typeof ev.data.dialogue === 'string' ? ev.data.dialogue : ''
-      if (!dialogueText.trim()) return
-      void requestSummary(dialogueText)
+      if (!ev.data || ev.data.source !== 'dsg-content') return
+      if (ev.data.type === 'REQUEST_SUMMARY') {
+        const dialogueText = typeof ev.data.dialogue === 'string' ? ev.data.dialogue : ''
+        if (!dialogueText.trim()) return
+        void requestSummary(dialogueText)
+        return
+      }
+      // 后台状态同步：记忆/预设（deepseek++ 完整功能）
+      if (ev.data.type === 'STATE_UPDATED' && ev.data.data) {
+        try {
+          const d = ev.data.data
+          if (Array.isArray(d.memories)) {
+            const memories = d.memories.filter((m) => m && typeof m === 'object')
+            syncMemoriesToLocal(memories)
+          }
+          if (d.activePreset && typeof d.activePreset === 'object') {
+            syncActivePresetToLocal(d.activePreset)
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     })
 
     // 广播就绪
     broadcast('READY', {})
+  }
+
+  // ── 记忆/预设同步到 localStorage（MAIN world 只能读 localStorage）──
+  function syncMemoriesToLocal(memories) {
+    try {
+      localStorage.setItem('dsg_injected_memories', JSON.stringify(memories.slice(0, 30)))
+    } catch {
+      /* ignore */
+    }
+  }
+  function syncActivePresetToLocal(preset) {
+    try {
+      localStorage.setItem('dsg_injected_preset', JSON.stringify(preset))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ── 记忆注入块（deepseek++ 结构：### 已有记忆）──────────────────
+  function buildInjectedMemoriesBlock() {
+    try {
+      const raw = localStorage.getItem('dsg_injected_memories')
+      if (!raw) return ''
+      const list = JSON.parse(raw)
+      if (!Array.isArray(list) || list.length === 0) return ''
+      const lines = list.slice(-10).map((m) => {
+        if (!m || typeof m !== 'object') return ''
+        const type = typeof m.type === 'string' ? m.type : 'topic'
+        const name = typeof m.name === 'string' ? m.name : '记忆'
+        const content = typeof m.content === 'string' ? m.content : ''
+        return '- [' + type + '] ' + name + ': ' + content
+      }).filter(Boolean)
+      return lines.length === 0 ? '' : '## 已有记忆\n\n' + lines.join('\n')
+    } catch {
+      return ''
+    }
+  }
+
+  // ── 激活预设注入块 ───────────────────────────────────────────────
+  function buildInjectedPresetBlock() {
+    try {
+      const raw = localStorage.getItem('dsg_injected_preset')
+      if (!raw) return ''
+      const preset = JSON.parse(raw)
+      if (!preset || typeof preset !== 'object' || typeof preset.content !== 'string' || !preset.content.trim()) return ''
+      return '## 系统提示词预设：' + (preset.name || '预设') + '\n\n' + preset.content
+    } catch {
+      return ''
+    }
   }
 
   if (document.readyState === 'loading') {

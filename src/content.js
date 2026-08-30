@@ -1316,8 +1316,163 @@ function escapeHtml(str) {
 }
 
 // ── 启动 ───────────────────────────────────────────────────────────
+// ── 后台桥接（对话管理 + 状态同步到 MAIN world）──────────────────
+// background 会向 DeepSeek 标签页发 DS_* 消息（会话列表/删除/重命名/历史）
+function setupBackgroundBridge() {
+  try {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message || typeof message.type !== 'string') return false
+
+      // 对话管理：DS_* 消息由 background 转发，走 DeepSeek 页面 API
+      if (message.type.startsWith('DS_')) {
+        handleDeepSeekMessage(message)
+          .then((data) => sendResponse({ ok: true, data }))
+          .catch((err) => sendResponse({ ok: false, error: err && err.message ? err.message : String(err) }))
+        return true
+      }
+
+      // 状态同步：STATE_UPDATED → 转发给 MAIN world（记忆/预设注入用）
+      if (message.type === 'STATE_UPDATED') {
+        window.postMessage({ source: 'dsg-content', type: 'STATE_UPDATED', data: message }, '*')
+      }
+      return false
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
+/** DeepSeek 会话管理（background 通过 chrome.tabs.sendMessage 转发） */
+async function handleDeepSeekMessage(message) {
+  const type = message.type
+  const payload = message.payload || {}
+  switch (type) {
+    case 'DS_LIST_SESSIONS': {
+      // 调用页面会话列表接口（复用 deepseek++ 的 API 封装思路）
+      const sessions = await callDeepSeekApi('/chat_session/fetch_page?lte_cursor.pinned=false')
+      const list = extractSessionList(sessions)
+      return list
+    }
+    case 'DS_DELETE_SESSION': {
+      await callDeepSeekApi('/chat_session/delete', 'POST', { chat_session_id: payload.id })
+      return true
+    }
+    case 'DS_RENAME_SESSION': {
+      await callDeepSeekApi('/chat_session/update_title', 'POST', { chat_session_id: payload.id, title: payload.title })
+      return true
+    }
+    case 'DS_GET_SESSION_HISTORY': {
+      const data = await callDeepSeekApi('/chat/history_messages?chat_session_id=' + encodeURIComponent(payload.id))
+      return extractHistoryMessages(data)
+    }
+    default:
+      return null
+  }
+}
+
+function getDeepSeekToken() {
+  const raw = localStorage.getItem('userToken')
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return typeof parsed === 'string' ? parsed : (parsed && parsed.value) || null
+  } catch {
+    return raw
+  }
+}
+
+async function callDeepSeekApi(path, method, body) {
+  const token = getDeepSeekToken()
+  if (!token) throw new Error('未找到 userToken，请先登录 DeepSeek')
+  const timezoneOffsetSeconds = String(-new Date().getTimezoneOffset() * 60)
+  const clientLocale = (navigator.language || 'zh_CN').replace('-', '_')
+  const resp = await fetch('https://chat.deepseek.com/api/v0' + path, {
+    method: method || 'GET',
+    credentials: 'include',
+    cache: 'no-store',
+    headers: {
+      Accept: '*/*',
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + token,
+      'X-App-Version': '2.0.3',
+      'X-Client-Locale': clientLocale,
+      'X-Client-Platform': 'web',
+      'X-Client-Timezone-Offset': timezoneOffsetSeconds,
+      'X-Client-Version': '2.0.3',
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!resp.ok) throw new Error('DeepSeek API 请求失败：' + resp.status)
+  const json = await resp.json()
+  if (json && typeof json === 'object' && 'code' in json && json.code !== 0) {
+    throw new Error(json.msg || ('DeepSeek API 错误：' + json.code))
+  }
+  return (json && json.data) || json
+}
+
+function extractSessionList(data) {
+  const record = (data && typeof data === 'object') ? data : {}
+  const biz = record.biz_data || record.data || record
+  const rawList = biz.chat_sessions || biz.sessions || biz.list || []
+  return Array.isArray(rawList) ? rawList.map((item) => {
+    if (!item || typeof item !== 'object') return null
+    const id = item.id || item.chat_session_id
+    if (!id) return null
+    const ts = (v) => {
+      const n = Number(v)
+      if (Number.isFinite(n)) return n
+      const p = Date.parse(String(v))
+      return Number.isFinite(p) ? p : Date.now()
+    }
+    return {
+      id: String(id),
+      title: String(item.title || item.name || '未命名对话'),
+      updatedAt: ts(item.updated_at || item.updatedAt || item.update_time),
+      createdAt: ts(item.created_at || item.createdAt || item.create_time),
+      messageCount: typeof item.message_count === 'number' ? item.message_count : undefined,
+    }
+  }).filter(Boolean) : []
+}
+
+function extractHistoryMessages(data) {
+  const record = (data && typeof data === 'object') ? data : {}
+  const biz = record.biz_data || record.data || record
+  const messages = Array.isArray(biz.chat_messages) ? biz.chat_messages : []
+  const out = []
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue
+    const role = String(msg.role || '').toLowerCase()
+    if (role !== 'user' && role !== 'assistant') continue
+    const content = readMsgText(msg)
+    if (!content) continue
+    out.push({ id: String(msg.id || ''), role, content, createdAt: Number(msg.created_at) || Date.now() })
+  }
+  return out
+}
+
+function readMsgText(msg) {
+  const fragments = Array.isArray(msg.fragments) ? msg.fragments : []
+  if (fragments.length > 0) {
+    const parts = []
+    for (const f of fragments) {
+      if (f && typeof f === 'object') {
+        const c = f.content || f.text || f.value || ''
+        if (typeof c === 'string' && c.trim()) parts.push(c)
+      }
+    }
+    if (parts.length > 0) return parts.join('\n')
+  }
+  for (const key of ['content', 'answer', 'reply', 'text']) {
+    const v = msg[key]
+    if (typeof v === 'string' && v.trim()) return v
+  }
+  return ''
+}
+
 function install() {
   if (document.getElementById('dsg-root')) return
+
+  setupBackgroundBridge()
 
   const host = document.createElement('div')
   host.id = 'dsg-root'
