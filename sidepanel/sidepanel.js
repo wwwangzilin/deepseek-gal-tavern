@@ -364,6 +364,7 @@
       <div class="sp-btn-row">
         <button class="sp-btn" data-act="refresh">刷新</button>
         <button class="sp-btn" data-act="new">＋ 新对话</button>
+        ${sessions.length > 0 ? '<button class="sp-btn sp-btn-danger" data-act="delAll">清空全部</button>' : ''}
       </div>
       <div class="sp-section-title">DeepSeek 会话（${sessions.length}）</div>
       ${sessions.length === 0 ? '<div class="sp-empty">没有会话，请先在 DeepSeek 创建对话</div>' : sessions.map((s) => `
@@ -384,6 +385,15 @@
       await send('REFRESH_DEEPSEEK_PAGE')
       toast('已刷新 DeepSeek 页面')
     })
+    const delAllBtn = main.querySelector('[data-act="delAll"]')
+    if (delAllBtn) {
+      delAllBtn.addEventListener('click', async () => {
+        if (!confirm('清空全部 ' + sessions.length + ' 个会话？此操作不可撤销！')) return
+        await send('DELETE_SESSIONS', { ids: sessions.map((s) => s.id) })
+        toast('已清空全部会话')
+        renderPage()
+      })
+    }
     main.querySelectorAll('[data-act="del"]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (!confirm('删除该会话？')) return

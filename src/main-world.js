@@ -143,6 +143,10 @@
     const preset = buildPresetBlock()
     if (preset) parts.push(preset)
 
+    // MCP 工具（deepseek++ 完整功能）
+    const mcpTools = buildMcpToolsBlock()
+    if (mcpTools) parts.push(mcpTools)
+
     // 工具 schema（借鉴 deepseek++：memory_save 记忆 + character_learn 角色学习）
     const tools = toolSchemasBlock()
     if (tools) parts.push(tools)
@@ -655,9 +659,26 @@
   function createToolStreamFilter() {
     let pending = '' // 待判定缓冲
     let shown = ''
-    const toolNames = () => (window.DSG_TOOLS && Array.isArray(window.DSG_TOOLS.TOOL_NAMES)
-      ? window.DSG_TOOLS.TOOL_NAMES
-      : [])
+    // 本地工具 + MCP 工具（deepseek++ 完整功能：MCP 调用也从台词剥离）
+    const toolNames = () => {
+      const local = window.DSG_TOOLS && Array.isArray(window.DSG_TOOLS.TOOL_NAMES)
+        ? window.DSG_TOOLS.TOOL_NAMES
+        : []
+      try {
+        const raw = localStorage.getItem('dsg_injected_mcp_tools')
+        if (raw) {
+          const mcp = JSON.parse(raw)
+          if (Array.isArray(mcp)) {
+            for (const t of mcp) {
+              if (t && typeof t.name === 'string' && !local.includes(t.name)) local.push(t.name)
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      return local
+    }
     const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const isToolTag = (name) => toolNames().includes(name)
 
@@ -678,6 +699,11 @@
           try {
             const calls = window.DSG_TOOLS.extractToolCalls(m[0])
             for (const call of calls) {
+              // 给 MCP 工具附加 serverId（deepseek++ MCP 执行链路）
+              if (call && call.name && !window.DSG_TOOLS.TOOL_NAMES.includes(call.name)) {
+                const serverId = mcpServerIdFor(call.name)
+                if (serverId) call.serverId = serverId
+              }
               broadcast('TOOL_CALL', { call, chatSessionId: lastChatSessionId })
             }
           } catch {
@@ -1104,6 +1130,14 @@
           /* ignore */
         }
       }
+      // MCP 工具同步：把启用服务的工具注入 prompt（deepseek++ MCP 功能）
+      if (ev.data.type === 'MCP_TOOLS_SYNC' && Array.isArray(ev.data.data)) {
+        try {
+          localStorage.setItem('dsg_injected_mcp_tools', JSON.stringify(ev.data.data))
+        } catch {
+          /* ignore */
+        }
+      }
     })
 
     // 广播就绪
@@ -1154,6 +1188,42 @@
       const preset = JSON.parse(raw)
       if (!preset || typeof preset !== 'object' || typeof preset.content !== 'string' || !preset.content.trim()) return ''
       return '## 系统提示词预设：' + (preset.name || '预设') + '\n\n' + preset.content
+    } catch {
+      return ''
+    }
+  }
+
+  // ── MCP 工具注入块（deepseek++ MCP 功能：启用服务的工具 schema）──
+  function mcpServerIdFor(toolName) {
+    try {
+      const raw = localStorage.getItem('dsg_injected_mcp_tools')
+      if (!raw) return ''
+      const tools = JSON.parse(raw)
+      if (!Array.isArray(tools)) return ''
+      const found = tools.find((t) => t && typeof t === 'object' && t.name === toolName)
+      return found && found.serverId ? found.serverId : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function buildMcpToolsBlock() {
+    try {
+      const raw = localStorage.getItem('dsg_injected_mcp_tools')
+      if (!raw) return ''
+      const tools = JSON.parse(raw)
+      if (!Array.isArray(tools) || tools.length === 0) return ''
+      const lines = tools.map((t) => {
+        if (!t || typeof t !== 'object' || typeof t.name !== 'string') return ''
+        const desc = typeof t.description === 'string' && t.description ? ' — ' + t.description : ''
+        return '- ' + t.name + '（' + (t.serverName || 'MCP') + '）' + desc
+      }).filter(Boolean)
+      if (lines.length === 0) return ''
+      return [
+        '### MCP 工具（已由扩展连接，可调用）',
+        '调用方式与本地工具相同：使用与工具名一致的 XML 标签，JSON 体放在标签内。',
+        lines.join('\n'),
+      ].join('\n\n')
     } catch {
       return ''
     }

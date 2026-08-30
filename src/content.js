@@ -497,23 +497,51 @@ class GalStage {
     })
   }
 
-  /** 工具调用执行：memory_save 记忆 / character_learn 角色卡补充 */
+  /** 工具调用执行：本地工具（记忆/角色学习）走 background，MCP 工具走 MCP 通道 */
   onToolCall({ call }) {
     if (!call || typeof call !== 'object') return
     const payload = call.payload && typeof call.payload === 'object' ? call.payload : {}
     try {
-      if (call.name === 'memory_save') {
-        const memories = readJSON(STORAGE_MEMORIES, [])
-        memories.push({
-          id: makeId('mem'),
-          type: typeof payload.type === 'string' ? payload.type : 'topic',
-          name: typeof payload.name === 'string' ? payload.name : '记忆',
-          content: typeof payload.content === 'string' ? payload.content : '',
-          tags: Array.isArray(payload.tags) ? payload.tags.filter((t) => typeof t === 'string') : [],
-          createdAt: Date.now(),
-        })
-        writeJSON(STORAGE_MEMORIES, memories)
-        this.showToolNote('🧠 已保存记忆：' + (payload.name || '未命名'))
+      // MCP 工具：转发 background 执行（deepseek++ MCP 完整功能）
+      if (call.serverId) {
+        try {
+          chrome.runtime.sendMessage({
+            type: 'EXECUTE_MCP_TOOL',
+            payload: { serverId: call.serverId, toolName: call.name, args: payload },
+          }, (result) => {
+            if (!chrome.runtime.lastError && result) {
+              if (result.ok) this.showToolNote('🔌 ' + call.name + '：' + (result.output || '执行成功'))
+              else this.showToolNote('🔌 ' + call.name + ' 失败：' + (result.error || '未知错误'))
+            }
+          })
+        } catch {
+          /* ignore */
+        }
+        return
+      }
+
+      // 本地工具：记忆走 background（chrome.storage），角色学习就地执行
+      if (call.name === 'memory_save' || call.name === 'memory_update' || call.name === 'memory_delete') {
+        try {
+          chrome.runtime.sendMessage({ type: 'EXECUTE_TOOL_CALL', payload: call }, (result) => {
+            if (!chrome.runtime.lastError && result) {
+              this.showToolNote((result.ok ? '🧠 ' : '⚠️ ') + (result.detail || result.summary || call.name))
+            }
+          })
+        } catch {
+          // 回退旧版 localStorage 记忆
+          const memories = readJSON(STORAGE_MEMORIES, [])
+          memories.push({
+            id: makeId('mem'),
+            type: typeof payload.type === 'string' ? payload.type : 'topic',
+            name: typeof payload.name === 'string' ? payload.name : '记忆',
+            content: typeof payload.content === 'string' ? payload.content : '',
+            tags: Array.isArray(payload.tags) ? payload.tags.filter((t) => typeof t === 'string') : [],
+            createdAt: Date.now(),
+          })
+          writeJSON(STORAGE_MEMORIES, memories)
+          this.showToolNote('🧠 已保存记忆：' + (payload.name || '未命名'))
+        }
       } else if (call.name === 'character_learn') {
         const result = learnToCharacter(payload)
         this.showToolNote(result ? '📖 角色卡已补充：' + result : '⚠️ 角色学习参数无效')
@@ -1342,6 +1370,42 @@ function setupBackgroundBridge() {
   }
 }
 
+/** 主动拉取后台状态（记忆/预设/技能/MCP）并同步给 MAIN world（修复刷新后注入缺失） */
+function syncStateToMain() {
+  try {
+    chrome.runtime.sendMessage({ type: 'GET_MEMORIES' }, (memories) => {
+      if (chrome.runtime.lastError || !Array.isArray(memories)) return
+      chrome.runtime.sendMessage({ type: 'GET_ACTIVE_PRESET' }, (activePreset) => {
+        if (chrome.runtime.lastError) activePreset = null
+        window.postMessage({
+          source: 'dsg-content',
+          type: 'STATE_UPDATED',
+          data: { memories, activePreset },
+        }, '*')
+      })
+    })
+    // MCP 工具列表（启用服务的工具注入 prompt 用）
+    chrome.runtime.sendMessage({ type: 'GET_MCP_SERVERS' }, (servers) => {
+      if (chrome.runtime.lastError || !Array.isArray(servers)) return
+      const enabledTools = []
+      for (const s of servers) {
+        if (s && s.enabled !== false && Array.isArray(s.tools) && s.tools.length > 0) {
+          for (const t of s.tools) {
+            if (t && typeof t.name === 'string') {
+              enabledTools.push({ serverId: s.id, serverName: s.name, name: t.name, description: t.description || '' })
+            }
+          }
+        }
+      }
+      if (enabledTools.length > 0) {
+        window.postMessage({ source: 'dsg-content', type: 'MCP_TOOLS_SYNC', data: enabledTools }, '*')
+      }
+    })
+  } catch {
+    /* ignore */
+  }
+}
+
 /** DeepSeek 会话管理（background 通过 chrome.tabs.sendMessage 转发） */
 async function handleDeepSeekMessage(message) {
   const type = message.type
@@ -1473,6 +1537,7 @@ function install() {
   if (document.getElementById('dsg-root')) return
 
   setupBackgroundBridge()
+  syncStateToMain() // 首次加载主动拉取记忆/预设/MCP 同步给 MAIN world
 
   const host = document.createElement('div')
   host.id = 'dsg-root'

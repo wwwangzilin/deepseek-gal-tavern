@@ -965,5 +965,46 @@ console.log('== WebDAV 同步（merge 逻辑）==')
   assert(mergedSkills.length === 2 && mergedSkills.find((s) => s.name === 's1').updatedAt === 100, '技能按名称合并')
 }
 
+console.log('== MCP 工具链路 ==')
+{
+  // core/mcp.js：服务 CRUD + 工具发现（用 mock fetch 验证协议请求）
+  const memStore3 = new Map()
+  const fakeStorage3 = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore3.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore3.set(key, value),
+    removeValue: async (key) => memStore3.delete(key),
+  }
+  const fakeGlobal3 = { Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp, DSG_STORAGE: fakeStorage3 }
+  fakeGlobal3.globalThis = fakeGlobal3
+  function loadCore3(name) {
+    const code = readFileSync(join(root, 'src', 'core', name), 'utf8')
+    new Function('globalThis', 'Intl', 'crypto', 'console', code)(fakeGlobal3, Intl, crypto, console)
+  }
+  loadCore3('mcp.js')
+  const MCP = fakeGlobal3.DSG_MCP
+  assert(MCP && typeof MCP.createMcpServer === 'function', 'DSG_MCP 已挂载')
+
+  const server = await MCP.createMcpServer({
+    id: 'm1', name: '测试服务', enabled: true,
+    transport: { kind: 'streamable_http', url: 'http://127.0.0.1:3000/mcp' },
+  })
+  assert(server.id === 'm1' && server.transport.kind === 'streamable_http', 'MCP 服务创建')
+
+  const listed = await MCP.getAllMcpServers()
+  assert(listed.length === 1 && listed[0].name === '测试服务', 'MCP 服务列表')
+
+  await MCP.updateMcpServer('m1', { enabled: false })
+  const updated = await MCP.getMcpServerById('m1')
+  assert(updated.enabled === false, 'MCP 服务启停')
+
+  await MCP.deleteMcpServer('m1')
+  const after = await MCP.getAllMcpServers()
+  assert(after.length === 0, 'MCP 服务删除')
+}
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`)
 process.exit(failed > 0 ? 1 : 0)
