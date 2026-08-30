@@ -663,6 +663,26 @@ window.GAL_CSS = `
   box-shadow: 0 0 8px rgba(143, 123, 255, .8);
 }
 
+/* ── 工具执行提示 ── */
+.dsg-tool-note {
+  position: fixed;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  z-index: 95;
+  max-width: 420px;
+  padding: 8px 16px;
+  border: 1px solid rgba(143, 123, 255, .5);
+  border-radius: 6px;
+  background: rgba(13, 16, 32, .94);
+  color: #e6e9f4;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  animation: dsg-rise .18s cubic-bezier(.16, 1, .3, 1);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
 /* ── 动画 ── */
 @keyframes dsg-blink { 50% { opacity: 0; } }
 @keyframes dsg-pulse { 0%, 100% { opacity: .4; } 50% { opacity: 1; } }

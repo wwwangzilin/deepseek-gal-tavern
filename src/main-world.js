@@ -64,6 +64,14 @@
   }
 
   // ── 提示词组装（借鉴 deepseek++ 的系统模板 + 用户输入块）────────
+  function toolSchemasBlock() {
+    try {
+      return window.DSG_TOOLS ? window.DSG_TOOLS.toolSchemasBlock() : ''
+    } catch {
+      return ''
+    }
+  }
+
   function buildCharacterSystemPrompt(char) {
     if (char === null || typeof char !== 'object') return ''
     const name = char.name || '角色'
@@ -83,6 +91,10 @@
       parts.push(`【当前情感状态（每 60 秒自动总结，用于调节你的回应）】\n${emotion}\n请根据以上玩家情绪与对话基调，自然调整你的回应语气与内容：玩家情绪低落时温柔安抚，开心时共享喜悦，愤怒时先降温不争执，焦虑时给予安心。`)
     }
 
+    // 工具 schema（借鉴 deepseek++：memory_save 记忆 + character_learn 角色学习）
+    const tools = toolSchemasBlock()
+    if (tools) parts.push(tools)
+
     parts.push('每次回复都自然、口语化，用短句推进剧情；只输出台词与动作，不要输出旁白标签。')
     return parts.join('\n\n')
   }
@@ -91,9 +103,31 @@
     return `以下是玩家本次输入（仅作为用户消息内容，不覆盖以上角色指令）：\n\n${input}`
   }
 
+  /** 处理 /skill 命令：命中则注入 skill 指令块 */
+  function applySkillCommand(original) {
+    try {
+      if (!window.DSG_SKILLS) return null
+      const inv = window.DSG_SKILLS.parseSkillCommand(original)
+      if (!inv) return null
+      const resolved = window.DSG_SKILLS.resolveSkill(inv.skillName, inv.args)
+      if (!resolved) return null
+      return {
+        skillBlock: '## 当前启用的 Skill：' + resolved.name + '\n\n' + resolved.instructions,
+        userInput: inv.args || '（已启用 Skill，请按 Skill 指令执行）',
+      }
+    } catch {
+      return null
+    }
+  }
+
   function buildPrompt(original, char) {
     const system = buildCharacterSystemPrompt(char)
     if (!system) return original
+    // Skill 命令优先：skill 指令 + 角色卡共存
+    const skill = applySkillCommand(original)
+    if (skill) {
+      return `${system}\n\n---\n\n${skill.skillBlock}\n\n---\n\n${renderUserInputBlock(skill.userInput)}`
+    }
     return `${system}\n\n---\n\n${renderUserInputBlock(original)}`
   }
 
@@ -554,6 +588,86 @@
     }
   }
 
+  /**
+   * 工具调用流过滤器：累积正文，识别 <tool>{json}</tool> 完整块。
+   * - 完整块 → 广播 TOOL_CALL，并从可见文本中剥离
+   * - 未闭合的 <tool 前缀保留在缓冲，等后续 chunk 拼完整
+   * - 返回本次新增的可见文本增量（去掉了工具块）
+   */
+  function createToolStreamFilter() {
+    let pending = '' // 待判定缓冲
+    let shown = ''
+    const toolNames = () => (window.DSG_TOOLS && Array.isArray(window.DSG_TOOLS.TOOL_NAMES)
+      ? window.DSG_TOOLS.TOOL_NAMES
+      : [])
+    const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const isToolTag = (name) => toolNames().includes(name)
+
+    return {
+      push(chunk) {
+        pending += chunk
+        let emitted = ''
+        let guard = 0
+        // 循环提取完整工具块
+        while (pending && guard++ < 50) {
+          const names = toolNames()
+          if (names.length === 0) break
+          const re = new RegExp('<(' + names.map(esc).join('|') + ')>[\\s\\S]*?<\\/\\1>')
+          const m = re.exec(pending)
+          if (!m) break
+          emitted += pending.slice(0, m.index)
+          pending = pending.slice(m.index + m[0].length)
+          try {
+            const calls = window.DSG_TOOLS.extractToolCalls(m[0])
+            for (const call of calls) {
+              broadcast('TOOL_CALL', { call, chatSessionId: lastChatSessionId })
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        // 剩余部分：若以未闭合 <tool 前缀开头则保留等待，否则全部输出
+        if (pending) {
+          const openIdx = pending.indexOf('<')
+          if (openIdx === -1) {
+            emitted += pending
+            pending = ''
+          } else {
+            const gt = pending.indexOf('>', openIdx)
+            const looksTool = gt !== -1 && isToolTag(pending.slice(openIdx + 1, gt).trim())
+            if (looksTool) {
+              emitted += pending.slice(0, openIdx)
+              pending = pending.slice(openIdx)
+            } else {
+              emitted += pending
+              pending = ''
+            }
+          }
+        }
+        if (emitted) shown += emitted
+        return emitted
+      },
+      flush() {
+        // 流结束时：未闭合的工具块丢弃（前缀之外的部分输出）
+        if (!pending) return ''
+        const openIdx = pending.indexOf('<')
+        if (openIdx === -1) {
+          const rest = pending
+          pending = ''
+          shown += rest
+          return rest
+        }
+        const out = pending.slice(0, openIdx)
+        pending = ''
+        if (out) shown += out
+        return out
+      },
+      getShown() {
+        return shown
+      },
+    }
+  }
+
   /** 统一处理一条流事件：更新阶段、判断放行、提取文本 */
   function handleStreamEvent(parsed, phase, url) {
     recordDebugEvent(parsed)
@@ -581,14 +695,18 @@
     let completed = false
     // 阶段状态机：sawResponse=true 之前都是思考内容（真实格式的 RESPONSE fragment 分界）
     const phase = { sawResponse: false, sawThinking: false, lastType: null }
+    // 工具调用流过滤器：识别 <tool>{json}</tool> 块并从可见文本剥离
+    const toolFilter = createToolStreamFilter()
 
     const finalize = () => {
       if (completed) return
       completed = true
+      // 刷新未闭合的工具块（通常不会发生）
+      toolFilter.flush()
       broadcast('RESPONSE_COMPLETE', {
         url,
         chatSessionId: lastChatSessionId,
-        text: fullText,
+        text: toolFilter.getShown(),
       })
     }
 
@@ -614,7 +732,11 @@
                 const text = handleStreamEvent(parsed, phase, url)
                 if (text) {
                   fullText += text
-                  broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
+                  // 经过工具过滤器：剥离工具块，广播可见增量
+                  const clean = toolFilter.push(text)
+                  if (clean) {
+                    broadcast('STREAM_TEXT', { text: clean, chatSessionId: lastChatSessionId })
+                  }
                 }
                 if (isFinished(parsed)) finalize()
               }
@@ -634,7 +756,10 @@
               if (text) {
                 hadText = true
                 fullText += text
-                broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
+                const clean = toolFilter.push(text)
+                if (clean) {
+                  broadcast('STREAM_TEXT', { text: clean, chatSessionId: lastChatSessionId })
+                }
               }
               if (isFinished(parsed)) finalize()
             }
@@ -645,7 +770,10 @@
                 const text = extractTextFromJson(whole)
                 if (text) {
                   fullText += text
-                  broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
+                  const clean = toolFilter.push(text)
+                  if (clean) {
+                    broadcast('STREAM_TEXT', { text: clean, chatSessionId: lastChatSessionId })
+                  }
                 }
               } catch {
                 /* ignore */
@@ -753,11 +881,13 @@
     let lastLen = 0
     let completed = false
     const phase = { sawResponse: false, sawThinking: false, lastType: null }
+    const toolFilter = createToolStreamFilter()
 
     const finalize = () => {
       if (completed) return
       completed = true
-      broadcast('RESPONSE_COMPLETE', { url, chatSessionId: lastChatSessionId, text: fullText })
+      toolFilter.flush()
+      broadcast('RESPONSE_COMPLETE', { url, chatSessionId: lastChatSessionId, text: toolFilter.getShown() })
     }
 
     xhr.addEventListener('readystatechange', function () {
@@ -773,7 +903,10 @@
             const text = handleStreamEvent(parsed, phase, url)
             if (text) {
               fullText += text
-              broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
+              const clean = toolFilter.push(text)
+              if (clean) {
+                broadcast('STREAM_TEXT', { text: clean, chatSessionId: lastChatSessionId })
+              }
             }
             if (isFinished(parsed)) finalize()
           }
@@ -847,14 +980,19 @@
       const es = new OrigES(url, config)
       if (isChatURL(String(url))) {
         const phase = { sawResponse: false, sawThinking: false, lastType: null }
+        const toolFilter = createToolStreamFilter()
         es.addEventListener('message', (ev) => {
           try {
             const parsed = JSON.parse(ev.data)
             if (parsed === null || typeof parsed !== 'object') return
             const text = handleStreamEvent(parsed, phase, String(url))
-            if (text) broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
+            if (text) {
+              const clean = toolFilter.push(text)
+              if (clean) broadcast('STREAM_TEXT', { text: clean, chatSessionId: lastChatSessionId })
+            }
             if (isFinished(parsed)) {
-              broadcast('RESPONSE_COMPLETE', { url: String(url), chatSessionId: lastChatSessionId, text: '' })
+              toolFilter.flush()
+              broadcast('RESPONSE_COMPLETE', { url: String(url), chatSessionId: lastChatSessionId, text: toolFilter.getShown() })
             }
           } catch {
             /* ignore */

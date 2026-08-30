@@ -223,7 +223,16 @@ const context = {
 }
 
 // 用 Function 把 IIFE 里的闭包变量暴露出来测（main-world 是 IIFE + 挂 window）
+function injectSkillTools(win) {
+  const code = readFileSync(join(root, 'src', 'skill-tools.js'), 'utf8')
+  new Function('window', 'localStorage', code)(win, {
+    getItem: (k) => (win.localStorage && win.localStorage.getItem ? win.localStorage.getItem(k) : null),
+    setItem: (k, v) => win.localStorage && win.localStorage.setItem && win.localStorage.setItem(k, String(v)),
+  })
+}
+
 function runMainWorld(extraGlobals = {}) {
+  injectSkillTools(windowMock)
   const code = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     code)(windowMock, documentMock, localStorageMock, console,
@@ -268,6 +277,7 @@ storage.set('dsg_active_character', JSON.stringify(injectChar))
   winI.__dsgInstalled = false
   winI.fetch = savedFetchMock
   winI.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  injectSkillTools(winI)
 
   const codeI = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
@@ -351,6 +361,7 @@ storage.set('dsg_active_character', JSON.stringify(injectChar))
     return Promise.resolve(new Response('{}', { status: 200 }))
   }
   winSum.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  injectSkillTools(winSum)
   const codeSum = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeSum)(winSum, { readyState: 'complete', addEventListener: () => {} }, storeI, console,
@@ -434,6 +445,7 @@ const fakeJsonResponse = new Response(
     send() {}
     addEventListener() {}
   }
+  injectSkillTools(win2Obj)
   const ctx2 = {
     window: win2Obj, document: { readyState: 'complete', addEventListener: () => {} },
     localStorage: store2, console,
@@ -508,6 +520,7 @@ const fakeRealFormatResponse = new Response(
     fetch: () => Promise.resolve(fakeRealFormatResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
+  injectSkillTools(winRObj)
   const codeR = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeR)(winRObj, { readyState: 'complete', addEventListener: () => {} }, storeR, console,
@@ -558,6 +571,7 @@ const fakeNoThinkingResponse = new Response(
     fetch: () => Promise.resolve(fakeNoThinkingResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
+  injectSkillTools(winNObj)
   const codeN = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeN)(winNObj, { readyState: 'complete', addEventListener: () => {} }, storeN, console,
@@ -591,6 +605,7 @@ const fakeNoThinkingResponse = new Response(
     fetch: () => Promise.resolve(fakeNoNewlineResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
+  injectSkillTools(winNObj)
   const codeN = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeN)(winNObj, { readyState: 'complete', addEventListener: () => {} }, storeN, console,
@@ -624,6 +639,7 @@ const fakeNoThinkingResponse = new Response(
     fetch: () => Promise.resolve(fakeJsonResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
+  injectSkillTools(winJObj)
   const codeJ = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeJ)(winJObj, { readyState: 'complete', addEventListener: () => {} }, storeJ, console,
@@ -662,6 +678,7 @@ console.log('== 历史广播 ==')
     ] },
   }), { status: 200 }))
   win3Obj.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  injectSkillTools(win3Obj)
   const ctx3 = { window: win3Obj, document: { readyState: 'complete', addEventListener: () => {} }, localStorage: store3, console, TextDecoder, TextEncoder, ReadableStream, Response, URL, setTimeout, clearTimeout }
   const code3 = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
@@ -691,6 +708,122 @@ console.log('== content.js（打字机/分页/角色卡）==')
     console.error('  ' + (e.stack || '').split('\n').slice(0, 6).join('\n  '))
   }
   assert(ok, 'content.js 可加载（语法与顶层逻辑）')
+}
+
+console.log('== skill 命令与工具调用 ==')
+{
+  // skill-tools 模块独立验证
+  const winS = { localStorage: { getItem: () => null, setItem: () => {} } }
+  injectSkillTools(winS)
+  const SK = winS.DSG_SKILLS
+  const TK = winS.DSG_TOOLS
+  assert(SK && typeof SK.getAllSkills === 'function', 'DSG_SKILLS 已挂载')
+  assert(TK && typeof TK.toolSchemasBlock === 'function', 'DSG_TOOLS 已挂载')
+  assert(SK.getAllSkills().length >= 4, '内置 skill 数量 ≥ 4')
+
+  // /skill 命令解析
+  const inv = SK.parseSkillCommand('/roleplay 深夜酒馆，气氛暧昧')
+  assert(inv && inv.skillName === 'roleplay', '/skill 命令解析')
+  assert(inv.args === '深夜酒馆，气氛暧昧', 'skill 参数解析')
+  const resolved = SK.resolveSkill('roleplay', inv.args)
+  assert(resolved && resolved.instructions.includes('角色扮演'), 'skill 指令解析')
+
+  // 工具 schema
+  const schemas = TK.toolSchemasBlock()
+  assert(schemas.includes('memory_save'), '工具 schema 含 memory_save')
+  assert(schemas.includes('character_learn'), '工具 schema 含 character_learn')
+
+  // 工具调用提取与剥离
+  const text = '好的，我明白了。\n<character_learn>{"field":"personality","content":"怕黑但会强撑"}</character_learn>\n然后我继续说台词'
+  const calls = TK.extractToolCalls(text)
+  assert(calls.length === 1, '提取到 1 个工具调用', JSON.stringify(calls))
+  assert(calls[0].name === 'character_learn', '工具名正确')
+  assert(calls[0].payload.field === 'personality' && calls[0].payload.content.includes('怕黑'), '工具 payload 正确')
+  const stripped = TK.stripToolCalls(text)
+  assert(!stripped.includes('<character_learn>'), '工具块已从文本剥离')
+  assert(stripped.includes('好的，我明白了') && stripped.includes('然后我继续说台词'), '剥离后保留正文')
+}
+
+console.log('== main-world：skill 注入 + 工具调用流过滤 ==')
+{
+  // skill 注入：/roleplay 请求 → prompt 应包含 skill 指令
+  const storageSK = new Map()
+  storageSK.set('dsg_active_character', JSON.stringify({ id: 'c1', name: '雾子', description: '神社巫女' }))
+  const storeSK = {
+    getItem: (k) => storageSK.has(k) ? storageSK.get(k) : null,
+    setItem: (k, v) => storageSK.set(k, String(v)),
+  }
+  let capturedSK = null
+  const winSK = {}
+  const msgsSK = []
+  winSK.localStorage = storeSK
+  winSK.postMessage = (m) => msgsSK.push(m)
+  winSK.addEventListener = () => {}
+  winSK.__dsgInstalled = false
+  winSK.fetch = (input, init) => {
+    capturedSK = init
+    return Promise.resolve(new Response('{}', { status: 200 }))
+  }
+  winSK.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  injectSkillTools(winSK)
+  const codeSK = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
+    codeSK)(winSK, { readyState: 'complete', addEventListener: () => {} }, storeSK, console,
+      class { open() {} send() {} addEventListener() {} },
+      winSK.fetch)
+
+  await winSK.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: '/roleplay 深夜酒馆', chat_session_id: 's1' }),
+  })
+  const sentSK = JSON.parse(capturedSK.body)
+  assert(sentSK.prompt.includes('当前启用的 Skill：roleplay'), 'skill 指令注入 prompt')
+  assert(sentSK.prompt.includes('深度角色扮演模式'), 'skill 内容进入 prompt')
+  assert(sentSK.prompt.includes('character_learn'), '工具 schema 随 prompt 注入')
+
+  // 工具调用流过滤：回复中带 <character_learn> 块 → TOOL_CALL 广播 + 台词剥离
+  const storageTC = new Map()
+  storageTC.set('dsg_active_character', JSON.stringify({ id: 'c1', name: '雾子' }))
+  const storeTC = {
+    getItem: (k) => storageTC.has(k) ? storageTC.get(k) : null,
+    setItem: (k, v) => storageTC.set(k, String(v)),
+  }
+  const msgsTC = []
+  const winTC = {
+    localStorage: storeTC,
+    postMessage: (m) => msgsTC.push(m),
+    addEventListener: () => {},
+    __dsgInstalled: false,
+    fetch: () => Promise.resolve(new Response(
+      'data: {"v":{"response":{"fragments":[{"id":3,"type":"RESPONSE","content":"我会陪着你"}]}}}\n\n' +
+      'data: {"v":"，别怕。"}\n\n' +
+      'data: {"v":"<character_learn>"}\n\n' +
+      'data: {"v":"{\\"field\\":\\"personality\\",\\"content\\":\\"怕黑但会强撑\\"}"}\n\n' +
+      'data: {"v":"</character_learn>"}\n\n' +
+      'data: {"p":"response/status","v":"FINISHED"}\n\n',
+      { status: 200 },
+    )),
+    XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
+  }
+  injectSkillTools(winTC)
+  const codeTC = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
+    codeTC)(winTC, { readyState: 'complete', addEventListener: () => {} }, storeTC, console,
+      class { open() {} send() {} addEventListener() {} },
+      winTC.fetch)
+
+  const respTC = await winTC.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: '我好怕', chat_session_id: 's1' }),
+  })
+  await respTC.text()
+
+  const shownTC = msgsTC.filter((m) => m.type === 'STREAM_TEXT').map((m) => m.data.text).join('')
+  const toolCalls = msgsTC.filter((m) => m.type === 'TOOL_CALL')
+  assert(shownTC === '我会陪着你，别怕。', '工具块从台词剥离，正文保留', `got: ${shownTC}`)
+  assert(toolCalls.length === 1, 'TOOL_CALL 已广播')
+  assert(toolCalls[0].data.call.name === 'character_learn', '工具名正确')
+  assert(toolCalls[0].data.call.payload.field === 'personality', '工具 payload 正确')
 }
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`)

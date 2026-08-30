@@ -15,6 +15,7 @@ const STORAGE_CHARS = 'dsg_characters'
 const STORAGE_ACTIVE = 'dsg_active_character'
 const STORAGE_ENABLED = 'dsg_enabled'
 const STORAGE_INJECT = 'dsg_inject_prompt'
+const STORAGE_MEMORIES = 'dsg_memories'
 
 // 舞台逻辑坐标
 const STAGE_W = 960
@@ -254,6 +255,26 @@ function deleteCharacter(id) {
   }
 }
 
+/** 角色卡学习（character_learn 工具执行）：把新设定补充进当前角色卡 */
+function learnToCharacter(payload) {
+  const field = typeof payload.field === 'string' ? payload.field : ''
+  const content = typeof payload.content === 'string' ? payload.content.trim() : ''
+  if (!['description', 'personality', 'scenario', 'exampleDialogue'].includes(field) || !content) {
+    return ''
+  }
+  const char = getActiveCharacter()
+  if (!char) return ''
+  const replace = payload.replace === true
+  const prev = typeof char[field] === 'string' ? char[field] : ''
+  if (replace) {
+    char[field] = content
+  } else {
+    char[field] = prev ? prev + '\n' + content : content
+  }
+  saveCharacter(char)
+  return (payload.field + ' → ' + content.slice(0, 30))
+}
+
 // ── 桥接到 DeepSeek 原输入框 ───────────────────────────────────────
 function findTextarea() {
   const list = document.querySelectorAll('textarea')
@@ -404,6 +425,9 @@ class GalStage {
         case 'RESPONSE_COMPLETE':
           this.onResponseComplete(e.data.data)
           break
+        case 'TOOL_CALL':
+          this.onToolCall(e.data.data)
+          break
         case 'HISTORY':
           this.onHistory(e.data.data)
           break
@@ -412,6 +436,43 @@ class GalStage {
           break
       }
     })
+  }
+
+  /** 工具调用执行：memory_save 记忆 / character_learn 角色卡补充 */
+  onToolCall({ call }) {
+    if (!call || typeof call !== 'object') return
+    const payload = call.payload && typeof call.payload === 'object' ? call.payload : {}
+    try {
+      if (call.name === 'memory_save') {
+        const memories = readJSON(STORAGE_MEMORIES, [])
+        memories.push({
+          id: makeId('mem'),
+          type: typeof payload.type === 'string' ? payload.type : 'topic',
+          name: typeof payload.name === 'string' ? payload.name : '记忆',
+          content: typeof payload.content === 'string' ? payload.content : '',
+          tags: Array.isArray(payload.tags) ? payload.tags.filter((t) => typeof t === 'string') : [],
+          createdAt: Date.now(),
+        })
+        writeJSON(STORAGE_MEMORIES, memories)
+        this.showToolNote('🧠 已保存记忆：' + (payload.name || '未命名'))
+      } else if (call.name === 'character_learn') {
+        const result = learnToCharacter(payload)
+        this.showToolNote(result ? '📖 角色卡已补充：' + result : '⚠️ 角色学习参数无效')
+      }
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  /** 舞台内浮动提示（工具执行结果等） */
+  showToolNote(text) {
+    const old = this.el.querySelector('.dsg-tool-note')
+    if (old) old.remove()
+    const note = document.createElement('div')
+    note.className = 'dsg-tool-note'
+    note.textContent = text
+    this.el.append(note)
+    setTimeout(() => note.remove(), 4000)
   }
 
   /** 思考中状态（reasoning 块） */
@@ -560,6 +621,7 @@ class GalStage {
           ${getCharacters().map((c) => `<option value="${c.id}" ${c.id === char.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')}
         </select>
         <button class="dsg-btn" data-act="edit-chars">角色</button>
+        <button class="dsg-btn" data-act="skills">技能</button>
       </div>
       <div class="dsg-topbar-right">
         <button class="dsg-btn" data-act="history">历史</button>
@@ -579,6 +641,7 @@ class GalStage {
       const act = btn.dataset.act
       if (act === 'history') this.togglePanel('history')
       else if (act === 'auto') { this.auto = !this.auto; this.renderTopbar() }
+      else if (act === 'skills') this.togglePanel('skills')
       else if (act === 'settings') this.togglePanel('settings')
       else if (act === 'edit-chars') this.togglePanel('chars')
     })
@@ -889,7 +952,9 @@ class GalStage {
     if (name === 'history') this.renderHistoryPanel(panel)
     else if (name === 'settings') this.renderSettingsPanel(panel)
     else if (name === 'chars') this.renderCharsPanel(panel)
+    else if (name === 'skills') this.renderSkillsPanel(panel)
     else if (name === 'edit-char') this.renderCharEditPanel(panel, this.editingChar)
+    else if (name === 'edit-skill') this.renderSkillEditPanel(panel, this.editingSkill)
 
     this.el.append(panel)
   }
@@ -1039,6 +1104,77 @@ class GalStage {
       this.onCharacterChanged()
       this.renderTopbar()
       this.closePanel()
+    })
+  }
+
+  /** 技能面板：列出内置 + 自定义 skill，新建/编辑/删除 */
+  renderSkillsPanel(panel) {
+    let skills = []
+    try {
+      skills = window.DSG_SKILLS ? window.DSG_SKILLS.getAllSkills() : []
+    } catch {
+      skills = []
+    }
+    panel.innerHTML = `
+      <div class="dsg-panel-head"><span>技能（/技能名 触发）</span><button class="dsg-btn" data-close="1">关闭</button></div>
+      <div class="dsg-panel-body">
+        <div class="dsg-char-list">
+          ${skills.map((s) => `
+            <div class="dsg-char-card" data-name="${escapeHtml(s.name)}">
+              <div class="dsg-char-card-info">
+                <div class="dsg-char-card-name">/${escapeHtml(s.name)}</div>
+                <div class="dsg-char-card-desc">${escapeHtml(s.description || '').slice(0, 60)}</div>
+              </div>
+              ${s.source === 'custom' ? `<button class="dsg-char-card-del" data-del="${escapeHtml(s.name)}">删除</button>` : '<span style="font-size:10px;color:#98a1c2;flex:none">内置</span>'}
+            </div>`).join('')}
+        </div>
+        <div style="margin-top:12px"><button class="dsg-btn dsg-btn-accent" data-new="1">＋ 新建技能</button></div>
+        <div class="dsg-hint" style="margin-top:10px">在输入框输入 <code>/技能名 参数</code> 即可启用对应技能。例如 <code>/roleplay 进入深夜酒馆</code>。</div>
+      </div>
+    `
+    panel.querySelector('[data-close]').addEventListener('click', () => this.closePanel())
+    panel.querySelectorAll('[data-del]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        try { window.DSG_SKILLS.deleteSkill(btn.dataset.del) } catch { /* ignore */ }
+        this.togglePanel('skills')
+      })
+    })
+    panel.querySelector('[data-new]').addEventListener('click', () => {
+      this.editingSkill = { name: '', description: '', instructions: '', source: 'custom' }
+      this.togglePanel('edit-skill')
+    })
+  }
+
+  /** 技能编辑面板 */
+  renderSkillEditPanel(panel, skill) {
+    const s = skill || { name: '', description: '', instructions: '' }
+    panel.innerHTML = `
+      <div class="dsg-panel-head"><span>编辑技能</span><button class="dsg-btn" data-close="1">关闭</button></div>
+      <div class="dsg-panel-body dsg-form">
+        <label>名称（kebab-case，用于 /名称 触发）</label>
+        <input type="text" data-f="name" value="${escapeHtml(s.name)}">
+        <label>描述</label>
+        <textarea data-f="description">${escapeHtml(s.description || '')}</textarea>
+        <label>指令（instructions，注入给模型的系统指令）</label>
+        <textarea data-f="instructions" style="height:140px">${escapeHtml(s.instructions || '')}</textarea>
+        <div class="dsg-form-actions">
+          <button class="dsg-btn dsg-btn-accent" data-save="1">保存</button>
+          <button class="dsg-btn" data-close="1">关闭</button>
+        </div>
+      </div>
+    `
+    panel.querySelector('[data-close]').addEventListener('click', () => this.closePanel())
+    panel.querySelector('[data-save]').addEventListener('click', () => {
+      const out = {}
+      for (const input of panel.querySelectorAll('[data-f]')) {
+        out[input.dataset.f] = input.value.trim()
+      }
+      if (!out.name) return
+      try {
+        window.DSG_SKILLS.saveSkill({ ...s, ...out, source: 'custom' })
+      } catch { /* ignore */ }
+      this.togglePanel('skills')
     })
   }
 
