@@ -179,8 +179,8 @@
       let out = ''
       for (const frag of rec.v) {
         if (frag && typeof frag === 'object' && typeof frag.content === 'string') {
-          // 只取正式正文片段，跳过思考/提示类片段
-          if (isThinkingBlock(frag)) continue
+          // 白名单式过滤：带 type 的片段必须明确是正文类型，未知类型（思考/其他）一律跳过
+          if (!isReplyFragment(frag)) continue
           out += frag.content
         }
       }
@@ -274,6 +274,102 @@
     }
   }
 
+  // ── 阶段状态机：思考/回复阶段跟踪 ────────────────────────────────
+  // DeepSeek 流里 status 事件带阶段值（如 REASONING / REPLYING / FINISHED 等），
+  // 我们只在「正式回复」阶段放行文本，思考阶段只广播 THINKING 指示。
+  function updatePhase(parsed, phase) {
+    if (parsed === null || typeof parsed !== 'object') return
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) updatePhase(item, phase)
+      return
+    }
+    // status 事件：{"p":"response/status","v":"REASONING"} / "REPLYING" / "FINISHED"
+    const path = typeof parsed.p === 'string' ? parsed.p : ''
+    if (path.endsWith('/status') || path === 'status' || path.includes('status')) {
+      const v = typeof parsed.v === 'string' ? parsed.v.toUpperCase() : ''
+      if (/REASON|THINK|COGIT|THOUGHT/.test(v)) phase.value = 'thinking'
+      else if (/REPLY|ANSWER|CONTENT|RESPOND|GENERAT|STREAM|FINISHED|DONE/.test(v)) phase.value = 'replying'
+      else if (v === 'FINISHED' || v === 'DONE') phase.value = 'replying'
+      return
+    }
+    // reasoning 路径/类型 → 思考阶段
+    if (isReasoning(parsed)) {
+      phase.value = 'thinking'
+      return
+    }
+  }
+
+  /** 阶段判断：当前事件是否属于正式回复（放行文本） */
+  function inReplyPhase(parsed, phase) {
+    // 显式阶段已锁定
+    if (phase.value === 'replying') return true
+    if (phase.value === 'thinking') {
+      // 思考阶段：正文路径/类型明确是回复的才放行（防御误判）
+      const path = typeof parsed.p === 'string' ? parsed.p : ''
+      if (path.endsWith('/content') && !/(reason|think|thought|quasi)/i.test(path)) return true
+      if (path.endsWith('/fragments')) {
+        return hasReplyFragment(parsed)
+      }
+      return false
+    }
+    // 未知阶段：按路径/类型特征判断
+    const path = typeof parsed.p === 'string' ? parsed.p : ''
+    if (/(reason|think|thought|quasi)/i.test(path)) return false
+    if (path.endsWith('/fragments')) return hasReplyFragment(parsed)
+    if (path.endsWith('/content')) return true
+    return !isReasoning(parsed) && !isThinkingBlock(parsed)
+  }
+
+  /** fragments 数组里是否存在正式回复片段（type=text/response 等） */
+  function hasReplyFragment(parsed) {
+    if (Array.isArray(parsed.v)) {
+      return parsed.v.some((f) => f && typeof f === 'object' && isReplyFragment(f))
+    }
+    return false
+  }
+
+  /** 单个片段是否属于正式回复：带 type 必须命中正文白名单，无 type 视为正文 */
+  function isReplyFragment(frag) {
+    if (frag === null || typeof frag !== 'object') return false
+    const type = typeof frag.type === 'string' ? frag.type.toUpperCase() : ''
+    if (type) {
+      // 明确是思考/提示类 → 非正文
+      if (/^(THINK|TIP|REASON|REASONING|THOUGHT|COGIT|INTERNAL)/.test(type)) return false
+      // 其余带 type 的：只认正文白名单，未知类型一律不放行（防思考新类型混入）
+      return /^(TEXT|CONTENT|RESPONSE|ANSWER|REPLY|NORMAL|PARAGRAPH)$/.test(type)
+    }
+    // 无 type：有正文内容即视为回复
+    return typeof frag.content === 'string' && frag.content.trim() !== ''
+  }
+
+  // 调试转储：最近 N 条原始事件，供诊断「思考混入」问题
+  const DEBUG_EVENTS = []
+  const DEBUG_LIMIT = 200
+  function recordDebugEvent(parsed) {
+    try {
+      DEBUG_EVENTS.push(parsed)
+      if (DEBUG_EVENTS.length > DEBUG_LIMIT) DEBUG_EVENTS.shift()
+      Object.defineProperty(window, '__dsgDebugEvents', {
+        get: () => DEBUG_EVENTS,
+        configurable: true,
+      })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** 统一处理一条流事件：更新阶段、判断放行、提取文本 */
+  function handleStreamEvent(parsed, phase, url) {
+    recordDebugEvent(parsed)
+    updatePhase(parsed, phase)
+    if (isReasoning(parsed) && phase.value !== 'replying') {
+      broadcast('THINKING', { chatSessionId: lastChatSessionId })
+      return ''
+    }
+    if (!inReplyPhase(parsed, phase)) return ''
+    return extractText(parsed)
+  }
+
   async function interceptFetchResponse(responsePromise, url) {
     const response = await responsePromise
     if (!response || !response.body) return response
@@ -284,6 +380,8 @@
     let fullText = ''
     let remainder = ''
     let completed = false
+    // 阶段状态机：track 思考/回复阶段，只在正式回复阶段收文本
+    const phase = { value: 'unknown' } // 'thinking' | 'replying' | 'unknown'
 
     const finalize = () => {
       if (completed) return
@@ -314,10 +412,7 @@
                 if (!ev.trim()) continue
                 const parsed = parseSSEData(ev)
                 if (parsed === null) continue
-                if (isReasoning(parsed) && !fullText) {
-                  broadcast('THINKING', { chatSessionId: lastChatSessionId })
-                }
-                const text = extractText(parsed)
+                const text = handleStreamEvent(parsed, phase, url)
                 if (text) {
                   fullText += text
                   broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
@@ -336,10 +431,7 @@
             for (const line of events) {
               const parsed = parseSSEData(line)
               if (parsed === null) continue
-              if (isReasoning(parsed) && !fullText) {
-                broadcast('THINKING', { chatSessionId: lastChatSessionId })
-              }
-              const text = extractText(parsed)
+              const text = handleStreamEvent(parsed, phase, url)
               if (text) {
                 hadText = true
                 fullText += text
@@ -347,8 +439,8 @@
               }
               if (isFinished(parsed)) finalize()
             }
-            // 未解析出任何文本：尝试按普通 JSON 提取
-            if (!hadText && fullText === '') {
+            // 未解析出任何文本：尝试按普通 JSON 提取（仅限已进入回复阶段或未知阶段）
+            if (!hadText && fullText === '' && phase.value !== 'thinking') {
               try {
                 const whole = JSON.parse(remainder)
                 const text = extractTextFromJson(whole)
@@ -461,6 +553,7 @@
     let fullText = ''
     let lastLen = 0
     let completed = false
+    const phase = { value: 'unknown' }
 
     const finalize = () => {
       if (completed) return
@@ -478,10 +571,7 @@
             if (!ev.trim()) continue
             const parsed = parseSSEData(ev)
             if (parsed === null) continue
-            if (isReasoning(parsed) && !fullText) {
-              broadcast('THINKING', { chatSessionId: lastChatSessionId })
-            }
-            const text = extractText(parsed)
+            const text = handleStreamEvent(parsed, phase, url)
             if (text) {
               fullText += text
               broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
@@ -557,12 +647,12 @@
     function PatchedEventSource(url, config) {
       const es = new OrigES(url, config)
       if (isChatURL(String(url))) {
+        const phase = { value: 'unknown' }
         es.addEventListener('message', (ev) => {
           try {
             const parsed = JSON.parse(ev.data)
             if (parsed === null || typeof parsed !== 'object') return
-            if (isReasoning(parsed)) broadcast('THINKING', { chatSessionId: lastChatSessionId })
-            const text = extractText(parsed)
+            const text = handleStreamEvent(parsed, phase, String(url))
             if (text) broadcast('STREAM_TEXT', { text, chatSessionId: lastChatSessionId })
             if (isFinished(parsed)) {
               broadcast('RESPONSE_COMPLETE', { url: String(url), chatSessionId: lastChatSessionId, text: '' })

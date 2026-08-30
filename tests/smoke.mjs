@@ -400,11 +400,16 @@ const fakeJsonResponse = new Response(
   assert(done[0]?.data?.text === '你好，雾子', '完成事件携带全文')
 }
 
-// fragments 格式（DeepSeek 新版正文，含思考片段应被过滤）
+// fragments 格式（DeepSeek 新版正文，含思考片段应被过滤 + 阶段状态机）
 const fakeFragmentsWithThinkResponse = new Response(
   new ReadableStream({
     start(c) {
+      // 思考阶段：status REASONING + THINK 片段
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"REASONING"}\n\n'))
       c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"（内心：这题要仔细想想）","type":"THINK"}]}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"不该被显示","type":"THINK"}]}\n\n'))
+      // 回复阶段：status REPLYING + 正文
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"REPLYING"}\n\n'))
       c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"你好","type":"text"}]}\n\n'))
       c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"，我是雾子","type":"text"}]}\n\n'))
       c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"FINISHED"}\n\n'))
