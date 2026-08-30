@@ -9,6 +9,7 @@ importScripts(
   'core/presets.js',
   'core/tools.js',
   'core/mcp.js',
+  'core/sync.js',
 )
 
 const NEW_CHAT_URL = 'https://chat.deepseek.com/a/chat'
@@ -64,8 +65,10 @@ async function handleMessage(message, sender) {
     case 'DELETE_MCP_SERVER': { const { id } = message.payload || {}; await globalThis.DSG_MCP.deleteMcpServer(id); await broadcastMcpServersUpdate(sender.tab && sender.tab.id); return { ok: true } }
     case 'REFRESH_MCP_SERVER_TOOLS': { const { serverId } = message.payload || {}; const cache = await globalThis.DSG_MCP.refreshMcpServerDiscovery(serverId); await broadcastMcpServersUpdate(sender.tab && sender.tab.id); return cache }
     case 'EXECUTE_MCP_TOOL': { const { serverId, toolName, args } = message.payload || {}; try { const text = await globalThis.DSG_MCP.executeMcpTool(serverId, toolName, args); return { ok: true, output: text } } catch (err) { return { ok: false, error: err && err.message ? err.message : String(err) } } }
-    case 'GET_SYNC_CONFIG': return globalThis.DSG_STORAGE.getValue('dsg_sync_config', null, (raw) => raw || null)
-    case 'SAVE_SYNC_CONFIG': { await globalThis.DSG_STORAGE.setValue('dsg_sync_config', message.payload); return { ok: true } }
+    case 'GET_SYNC_CONFIG': return globalThis.DSG_SYNC ? globalThis.DSG_SYNC.getSyncConfig() : null
+    case 'SAVE_SYNC_CONFIG': { await globalThis.DSG_SYNC.saveSyncConfig(message.payload); return { ok: true } }
+    case 'WEBDAV_TEST': { await globalThis.DSG_SYNC.webdavTest(message.payload); return { ok: true } }
+    case 'WEBDAV_SYNC': { const result = await globalThis.DSG_SYNC.webdavSync(); await broadcastStateUpdate(sender.tab && sender.tab.id); return result }
     default: return null
   }
 }

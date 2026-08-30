@@ -503,6 +503,7 @@
         <div class="sp-row"><span>启用背景图</span><input type="checkbox" class="sp-checkbox" data-f="bgEnabled" ${background && background.enabled ? 'checked' : ''}></div>
         <label class="sp-label">背景 URL</label>
         <input class="sp-input" data-f="bgUrl" value="${esc(background && background.url || '')}" placeholder="https://.../image.png">
+        <div class="sp-row"><span>上传本地图片</span><input type="file" accept="image/*" data-file="bgUpload" style="display:none"><button class="sp-btn sp-btn-sm" data-act="bgUpload">选择图片</button></div>
         <div class="sp-row"><span>不透明度</span><input class="sp-input" style="width:80px" type="number" min="0" max="1" step="0.1" data-f="bgOpacity" value="${background ? background.opacity : 0.6}"></div>
         <div class="sp-btn-row">
           <button class="sp-btn sp-btn-accent" data-act="bgSave">保存背景</button>
@@ -512,19 +513,48 @@
       <div class="sp-section-title">WebDAV 同步</div>
       <div class="sp-card">
         <label class="sp-label">WebDAV URL</label>
-        <input class="sp-input" data-f="davUrl" placeholder="https://dav.example.com/dav/gal/">
+        <input class="sp-input" data-f="davUrl" value="${esc((await getSyncConfigSafe()).url || '')}" placeholder="https://dav.example.com/dav/gal/">
         <label class="sp-label">用户名</label>
-        <input class="sp-input" data-f="davUser">
+        <input class="sp-input" data-f="davUser" value="${esc((await getSyncConfigSafe()).username || '')}">
         <label class="sp-label">密码</label>
         <input class="sp-input" type="password" data-f="davPass">
-        <div class="sp-btn-row"><button class="sp-btn sp-btn-accent" data-act="davSave">保存同步配置</button></div>
-        <div class="sp-hint">同步记忆 / 自定义 Skill / 预设（JSON 文件）。</div>
+        <div class="sp-btn-row">
+          <button class="sp-btn sp-btn-accent" data-act="davSave">保存配置</button>
+          <button class="sp-btn" data-act="davTest">测试连接</button>
+          <button class="sp-btn" data-act="davSync">立即同步</button>
+        </div>
+        <div class="sp-hint">同步记忆 / 自定义 Skill / 预设（memories.json / skills.json / presets.json）。</div>
       </div>
       <div class="sp-section-title">关于</div>
       <div class="sp-card">
-        <div class="sp-card-desc">DeepSeek GAL 酒馆 v2.0 — 完整移植 DeepSeek++ 功能：记忆系统 / Skill / 预设 / 对话管理 / MCP / 工具调用。</div>
+        <div class="sp-card-desc">DeepSeek GAL 酒馆 v2.0 — 完整移植 DeepSeek++ 功能：记忆系统 / Skill / 预设 / 对话管理 / MCP / 工具调用 / WebDAV。</div>
       </div>
     `
+    async function getSyncConfigSafe() {
+      const cfg = await send('GET_SYNC_CONFIG')
+      return cfg && typeof cfg === 'object' ? cfg : {}
+    }
+    main.querySelector('[data-act="bgUpload"]').addEventListener('click', () => {
+      main.querySelector('[data-file="bgUpload"]').click()
+    })
+    main.querySelector('[data-file="bgUpload"]').addEventListener('change', () => {
+      const file = main.querySelector('[data-file="bgUpload"]').files[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const cfg = {
+          enabled: true,
+          type: 'upload',
+          imageData: reader.result,
+          url: '',
+          opacity: Number(main.querySelector('[data-f="bgOpacity"]').value) || 0.6,
+        }
+        await send('SAVE_BACKGROUND', cfg)
+        toast('已上传背景图片')
+        renderPage()
+      }
+      reader.readAsDataURL(file)
+    })
     main.querySelector('[data-act="bgSave"]').addEventListener('click', async () => {
       const cfg = {
         enabled: main.querySelector('[data-f="bgEnabled"]').checked,
@@ -551,6 +581,39 @@
       if (!cfg.url) { toast('URL 必填'); return }
       await send('SAVE_SYNC_CONFIG', cfg)
       toast('已保存同步配置')
+    })
+    main.querySelector('[data-act="davTest"]').addEventListener('click', async () => {
+      const cfg = {
+        url: main.querySelector('[data-f="davUrl"]').value.trim(),
+        username: main.querySelector('[data-f="davUser"]').value.trim(),
+        password: main.querySelector('[data-f="davPass"]').value,
+      }
+      if (!cfg.url) { toast('URL 必填'); return }
+      toast('正在测试连接…')
+      try {
+        const result = await send('WEBDAV_TEST', cfg)
+        if (result && result.ok) toast('✅ WebDAV 连接成功')
+        else toast('❌ 连接失败：' + ((result && result.error) || '未知错误'))
+      } catch {
+        toast('❌ 连接失败')
+      }
+    })
+    main.querySelector('[data-act="davSync"]').addEventListener('click', async () => {
+      const cfg = {
+        url: main.querySelector('[data-f="davUrl"]').value.trim(),
+        username: main.querySelector('[data-f="davUser"]').value.trim(),
+        password: main.querySelector('[data-f="davPass"]').value,
+      }
+      if (!cfg.url) { toast('URL 必填'); return }
+      await send('SAVE_SYNC_CONFIG', cfg)
+      toast('正在同步…')
+      try {
+        const result = await send('WEBDAV_SYNC')
+        if (result && result.ok) toast('✅ 同步完成：记忆 ' + result.memories + ' / 技能 ' + result.skills + ' / 预设 ' + result.presets)
+        else toast('❌ 同步失败：' + ((result && result.error) || '未知错误'))
+      } catch {
+        toast('❌ 同步失败')
+      }
     })
     // Token 预算实时保存
     main.querySelector('[data-f="tokenBudget"]').addEventListener('change', async () => {

@@ -920,5 +920,50 @@ console.log('== core 模块（记忆/预设/工具/权重）==')
   assert(after.length === 3, '工具保存后记忆 +1')
 }
 
+console.log('== WebDAV 同步（merge 逻辑）==')
+{
+  const memStore2 = new Map()
+  const fakeStorage2 = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore2.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore2.set(key, value),
+    removeValue: async (key) => memStore2.delete(key),
+  }
+  const fakeGlobal2 = { Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp, DSG_STORAGE: fakeStorage2 }
+  fakeGlobal2.globalThis = fakeGlobal2
+  function loadCore2(name) {
+    const code = readFileSync(join(root, 'src', 'core', name), 'utf8')
+    new Function('globalThis', 'Intl', 'crypto', 'console', code)(fakeGlobal2, Intl, crypto, console)
+  }
+  loadCore2('sync.js')
+  const SYNC = fakeGlobal2.DSG_SYNC
+  assert(SYNC && typeof SYNC.mergeMemories === 'function', 'DSG_SYNC 已挂载')
+
+  // 合并测试：本地新条目 + 远端新条目 + 冲突取新
+  const merged = SYNC.mergeMemories(
+    [
+      { syncId: 'a', content: '本地旧', updatedAt: 100 },
+      { syncId: 'c', content: '本地独有', updatedAt: 300 },
+    ],
+    [
+      { syncId: 'a', content: '远端新', updatedAt: 200 },
+      { syncId: 'b', content: '远端独有', updatedAt: 150 },
+    ],
+  )
+  const byId = new Map(merged.map((m) => [m.syncId, m]))
+  assert(merged.length === 3, '合并保留三方条目')
+  assert(byId.get('a').content === '远端新', '冲突时取更新时间新的一方')
+  assert(byId.get('b') && byId.get('c'), '双方独有条目都保留')
+
+  const mergedSkills = SYNC.mergeSkills(
+    [{ name: 's1', updatedAt: 100 }],
+    [{ name: 's1', updatedAt: 50 }, { name: 's2', updatedAt: 10 }],
+  )
+  assert(mergedSkills.length === 2 && mergedSkills.find((s) => s.name === 's1').updatedAt === 100, '技能按名称合并')
+}
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`)
 process.exit(failed > 0 ? 1 : 0)
