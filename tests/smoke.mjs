@@ -297,8 +297,9 @@ storage.set('dsg_active_character', JSON.stringify(injectChar))
   const sent = JSON.parse(capturedInit.body)
   assert(sent.prompt.includes('你是「雾子」'), '注入包含角色名', sent.prompt?.slice(0, 40))
   assert(sent.prompt.includes('【角色设定】\n神社巫女'), '注入包含角色设定')
-  assert(sent.prompt.includes('以下是玩家本次输入'), '注入包含玩家输入块')
-  assert(sent.prompt.endsWith('你好呀'), '原始玩家输入保留在末尾')
+  assert(sent.prompt.includes('dsg-visible-user-prompt:start'), '注入包含可见用户输入标记（deepseek++ 式）')
+  assert(sent.prompt.includes('以上是玩家本次输入'), '注入包含用户输入说明')
+  assert(sent.prompt.includes('你好呀'), '原始玩家输入保留')
   assert(sent.chat_session_id === 's1', '会话 ID 未被破坏')
   const readyMsg = msgsI.filter((m) => m.type === 'READY')
   assert(readyMsg.length === 1, 'READY 已广播')
@@ -323,7 +324,36 @@ storage.set('dsg_active_character', JSON.stringify(injectChar))
   })
   const sent3 = JSON.parse(capturedInit.body)
   assert(sent3.prompt.includes('你是「雾子」'), '后续消息仍强制注入角色卡（非首条）')
-  assert(sent3.prompt.includes('以下是玩家本次输入'), '注入包含玩家输入块')
+  assert(sent3.prompt.includes('dsg-visible-user-prompt:start'), '后续消息也带可见用户输入标记')
+
+  // 无激活角色时的兜底：只有角色列表 → 用第一个角色注入（修复注入静默失效）
+  const storageFB = new Map()
+  storageFB.set('dsg_characters', JSON.stringify([{ id: 'c9', name: '兜底娘', description: '兜底角色' }]))
+  const storeFB = {
+    getItem: (k) => storageFB.has(k) ? storageFB.get(k) : null,
+    setItem: (k, v) => storageFB.set(k, String(v)),
+  }
+  let capturedFB = null
+  const winFB = {}
+  winFB.localStorage = storeFB
+  winFB.postMessage = () => {}
+  winFB.addEventListener = () => {}
+  winFB.__dsgInstalled = false
+  winFB.fetch = (input, init) => { capturedFB = init; return Promise.resolve(new Response('{}', { status: 200 })) }
+  winFB.XMLHttpRequest = class { open() {} send() {} addEventListener() {} }
+  injectSkillTools(winFB)
+  const codeFB = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
+  new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
+    codeFB)(winFB, { readyState: 'complete', addEventListener: () => {} }, storeFB, console,
+      class { open() {} send() {} addEventListener() {} },
+      winFB.fetch)
+  await winFB.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+    method: 'POST',
+    body: JSON.stringify({ prompt: '你好', chat_session_id: 's9' }),
+  })
+  const sentFB = JSON.parse(capturedFB.body)
+  assert(sentFB.prompt.includes('兜底娘'), '无激活角色时自动用列表第一个角色注入（修复静默失效）')
+  assert(storageFB.get('dsg_active_character') !== undefined, '兜底后补写激活角色 id')
 
   // 情感总结注入：预置情感总结后，prompt 应包含调节指令
   storageI.set('dsg_emotion_summary', JSON.stringify({ text: '玩家情绪：焦虑\n对话基调：紧张\n调节建议：温柔安抚' }))

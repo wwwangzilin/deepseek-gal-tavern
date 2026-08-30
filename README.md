@@ -3,11 +3,12 @@
 把网页版 [DeepSeek](https://chat.deepseek.com) 变成 **Galgame 风格的角色扮演酒馆** 的浏览器插件（Chrome MV3）。
 
 - **gal 界面** 借鉴 [Ayase34/gal-view](https://github.com/Ayase34/gal-view)：16:9 舞台、角色立绘（说话发光，内置 DeepSeek娘立绘/卧室背景素材）、对话框 + 名牌、打字机效果、台词点击翻页、自动播放、历史面板。
-- **提示词注入** 借鉴 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（DeepSeek++）与二开版 [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek)：在页面 MAIN world 拦截 `fetch`/`XHR`/`EventSource`，改写 DeepSeek 对话接口的 `body.prompt`，把「角色卡系统提示词 + 玩家输入」注入**每一次请求**（首条与后续消息都强制注入），并解析 SSE 流式响应驱动舞台台词。
+- **提示词注入** 借鉴 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（DeepSeek++）与二开版 [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek)：在页面 MAIN world 拦截 `fetch`/`XHR`/`EventSource`，改写 DeepSeek 对话接口的 `body.prompt`，把「角色卡系统提示词 + 已有记忆 + Tools schema + 玩家输入」注入**每一次请求**（首条与后续消息都强制注入）。注入结构对齐 DeepSeek++：系统提示词在前，用户输入用 `<!-- dsg-visible-user-prompt:start/end -->` 标记包裹，让模型明确区分指令与消息。**修复了首次安装时注入静默失效的问题**（角色卡为空时自动回退列表第一个）。
 - **思考/正文分离**（基于 DeepSeek 真实流格式逆向）：跟踪 `fragments` 的 `THINK → RESPONSE` 类型分界——出现 `RESPONSE` 片段之前的所有文本都是思考内容，只闪动「思考中」指示，不混入台词；正式回复单独展示。TIP 提示、状态控制信号一律不渲染。
 - **情感调节**：每 60 秒用**快速模式（非思考）**总结对话情绪（玩家情绪 / 对话基调 / 调节建议），结果自动注入下一次请求的角色系统提示词，让角色随玩家情绪自然调整回应。
 - **Skill 技能系统**（借鉴 DeepSeek++）：输入 `/技能名 参数` 一键启用技能（内置：极致思考/前端设计/文档协作/深度角色扮演），可自定义技能，指令随每次请求注入。
 - **工具调用**（借鉴 DeepSeek++ XML 协议）：模型可调用 `memory_save` 保存长期记忆、`character_learn` 把对话中学习到的角色设定补充进角色卡——**角色卡随对话慢慢成长**。工具调用块自动从台词剥离，不干扰演出。
+- **雪璃预设**：角色面板「❄ 雪璃预设」一键创建傲娇猫娘角色（deepseek++ 式完整系统提示词：傲娇语言系统/动作神态/情绪图谱/日常情境/纠错机制）。
 
 源码仓库：<https://github.com/wwwangzilin/deepseek-gal-tavern>
 
