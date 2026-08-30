@@ -1,0 +1,7 @@
+v1.1.0: 内置立绘素材/界面切换开关/SSE 多格式解析修复
+
+- 内置 gal-view 预设素材（DeepSeek娘立绘、卧室背景）替换 SVG 占位
+- 左下角浮动按钮切换 GAL 酒馆与原版界面
+- SSE 解析支持 fragments/BATCH/无分隔残留/普通 JSON 兜底，修"一直在思考无输出"
+- 拦截与注入解耦：注入关闭时仍拦截流保证舞台收到回复
+- EventSource hook + reasoning 思考状态广播 + DOM 兜底同步

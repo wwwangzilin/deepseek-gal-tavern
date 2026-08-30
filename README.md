@@ -2,13 +2,16 @@
 
 把网页版 [DeepSeek](https://chat.deepseek.com) 变成 **Galgame 风格的角色扮演酒馆** 的浏览器插件（Chrome MV3）。
 
-- **gal 界面** 借鉴 [Ayase34/gal-view](https://github.com/Ayase34/gal-view)：16:9 舞台、角色立绘（说话发光）、对话框 + 名牌、打字机效果、台词点击翻页、自动播放、历史面板。
-- **提示词注入** 借鉴 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（DeepSeek++）与二开版 [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek)：在页面 MAIN world 拦截 `fetch`/`XHR`，改写 DeepSeek 对话接口的 `body.prompt`，把「角色卡系统提示词 + 玩家输入」注入每次请求，并解析 SSE 流式响应驱动舞台台词。
+- **gal 界面** 借鉴 [Ayase34/gal-view](https://github.com/Ayase34/gal-view)：16:9 舞台、角色立绘（说话发光，内置 DeepSeek娘立绘/卧室背景素材）、对话框 + 名牌、打字机效果、台词点击翻页、自动播放、历史面板。
+- **提示词注入** 借鉴 [zhu1090093659/deepseek-pp](https://github.com/zhu1090093659/deepseek-pp)（DeepSeek++）与二开版 [illegal-xd/WebTool-DeepSeek](https://github.com/illegal-xd/WebTool-DeepSeek)：在页面 MAIN world 拦截 `fetch`/`XHR`/`EventSource`，改写 DeepSeek 对话接口的 `body.prompt`，把「角色卡系统提示词 + 玩家输入」注入每次请求，并解析 SSE 流式响应（JSON-patch / fragments / BATCH / 普通 JSON 兜底）驱动舞台台词。
+
+源码仓库：<https://github.com/wwwangzilin/deepseek-gal-tavern>
 
 ## 效果
 
-- 打开 chat.deepseek.com，页面被 Galgame 舞台覆盖：深色夜晚背景 + 角色立绘 + 大对话框 + 打字机台词。
+- 打开 chat.deepseek.com，页面被 Galgame 舞台覆盖：深色夜晚背景（内置卧室场景图）+ 角色立绘 + 大对话框 + 打字机台词。
 - 顶部可切换角色卡；输入台词后，DeepSeek 以该角色身份回复，台词逐字打出，点击文本框可翻页/快进。
+- 左下角浮动按钮可一键切换 **GAL 酒馆界面 ↔ DeepSeek 原版界面**。
 - 历史面板保留本会话对话；刷新页面后自动从 DeepSeek 历史接口恢复对话。
 - 角色卡可上传立绘、自定义性格/场景/示例对话/开场白/附加系统指令。
 
