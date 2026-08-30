@@ -400,6 +400,20 @@ const fakeJsonResponse = new Response(
   assert(done[0]?.data?.text === '你好，雾子', '完成事件携带全文')
 }
 
+// fragments 格式（DeepSeek 新版正文，含思考片段应被过滤）
+const fakeFragmentsWithThinkResponse = new Response(
+  new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"（内心：这题要仔细想想）","type":"THINK"}]}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"你好","type":"text"}]}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/fragments","o":"APPEND","v":[{"content":"，我是雾子","type":"text"}]}\n\n'))
+      c.enqueue(new TextEncoder().encode('data: {"p":"response/status","v":"FINISHED"}\n\n'))
+      c.close()
+    },
+  }),
+  { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+)
+
 // fragments 格式（DeepSeek 新版正文）
 {
   const winF = {}
@@ -415,14 +429,14 @@ const fakeJsonResponse = new Response(
     postMessage: (m) => msgsF.push(m),
     addEventListener: () => {},
     __dsgInstalled: false,
-    fetch: () => Promise.resolve(fakeFragmentsResponse),
+    fetch: () => Promise.resolve(fakeFragmentsWithThinkResponse),
     XMLHttpRequest: class { open() {} send() {} addEventListener() {} },
   }
   const codeF = readFileSync(join(root, 'src', 'main-world.js'), 'utf8')
   new Function('window', 'document', 'localStorage', 'console', 'XMLHttpRequest', 'fetch',
     codeF)(winFObj, { readyState: 'complete', addEventListener: () => {} }, storeF, console,
       class { open() {} send() {} addEventListener() {} },
-      () => Promise.resolve(fakeFragmentsResponse))
+      () => Promise.resolve(fakeFragmentsWithThinkResponse))
 
   const respF = await winFObj.fetch('https://chat.deepseek.com/api/v0/chat/completion', {
     method: 'POST',
@@ -430,8 +444,10 @@ const fakeJsonResponse = new Response(
   })
   await respF.text()
   const fullF = msgsF.filter((m) => m.type === 'STREAM_TEXT').map((m) => m.data.text).join('')
-  assert(fullF === '你好，我是雾子', 'fragments 格式文本正确聚合', `got: ${fullF}`)
+  assert(fullF === '你好，我是雾子', 'fragments 正文聚合且 THINK 思考片段被过滤', `got: ${fullF}`)
+  assert(!fullF.includes('内心'), '思考内容未混入台词')
   assert(msgsF.some((m) => m.type === 'RESPONSE_COMPLETE'), 'fragments 流完成事件已广播')
+  assert(msgsF.some((m) => m.type === 'THINKING'), '思考片段触发 THINKING 广播')
 }
 
 // 无空行分隔的残留 SSE（流结束兜底）

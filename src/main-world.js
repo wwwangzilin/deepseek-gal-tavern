@@ -138,6 +138,20 @@
     }
   }
 
+  /** 判断某条记录/片段是否属于思考过程（不应进入台词） */
+  function isThinkingBlock(rec) {
+    if (rec === null || typeof rec !== 'object') return false
+    const path = typeof rec.p === 'string' ? rec.p : ''
+    // 路径关键词：reasoning / thinking / thought / think / quasi_status
+    if (/(reason|think|thought|quasi)/i.test(path)) return true
+    // fragments 片段可能带 type 字段：THINK / TIP / REASONING 等
+    const type = typeof rec.type === 'string' ? rec.type : ''
+    if (/^(THINK|TIP|REASON|REASONING|THOUGHT)/i.test(type)) return true
+    // 部分版本思考正文在 v 字符串但带 thinking 标记
+    if (rec.thinking === true || rec.is_thinking === true) return true
+    return false
+  }
+
   /** 从一条 JSON-patch 里提取正文文本增量（覆盖 DeepSeek 各版本格式） */
   function extractText(parsed) {
     if (parsed === null || typeof parsed !== 'object') return ''
@@ -150,7 +164,7 @@
     const rec = parsed
     // 跳过思考/状态类路径，只取正文文本
     const path = typeof rec.p === 'string' ? rec.p : ''
-    if (path.includes('reasoning') || path.includes('thinking')) return ''
+    if (/(reason|think|thought|quasi)/i.test(path)) return ''
     // 直接文本：{"v":"文本"} / {"p":"response/content","o":"APPEND","v":"文本"}
     if (typeof rec.v === 'string' && rec.p !== 'response/status') return rec.v
     // 路径 /content 直接设置：{"p":".../content","v":"文本"}
@@ -160,11 +174,13 @@
     // BATCH 格式：{"o":"BATCH","v":[...]}
     if (rec.o === 'BATCH' && Array.isArray(rec.v)) return extractText(rec.v)
     // fragments 格式（DeepSeek 新版正文走这里）：
-    // {"p":"response/fragments","o":"APPEND","v":[{content:"文本",...}]}
+    // {"p":"response/fragments","o":"APPEND","v":[{content:"文本",type:"text"|"think"|...}]}
     if (path.endsWith('/fragments') && Array.isArray(rec.v)) {
       let out = ''
       for (const frag of rec.v) {
         if (frag && typeof frag === 'object' && typeof frag.content === 'string') {
+          // 只取正式正文片段，跳过思考/提示类片段
+          if (isThinkingBlock(frag)) continue
           out += frag.content
         }
       }
@@ -175,7 +191,10 @@
       let out = ''
       for (const item of rec.v) {
         if (typeof item === 'string') out += item
-        else if (item && typeof item === 'object') out += extractText(item)
+        else if (item && typeof item === 'object') {
+          if (isThinkingBlock(item)) continue
+          out += extractText(item)
+        }
       }
       return out
     }
@@ -199,7 +218,12 @@
     if (parsed === null || typeof parsed !== 'object') return false
     if (Array.isArray(parsed)) return parsed.some(isReasoning)
     const path = typeof parsed.p === 'string' ? parsed.p : ''
-    return path.includes('reasoning') || path.includes('thinking') || path.includes('quasi_status')
+    if (/(reason|think|thought|quasi)/i.test(path)) return true
+    const type = typeof parsed.type === 'string' ? parsed.type : ''
+    if (/^(THINK|TIP|REASON|REASONING|THOUGHT)/i.test(type)) return true
+    // fragments 数组内的子片段：{"v":[{type:"THINK",...}]}
+    if (Array.isArray(parsed.v)) return parsed.v.some((item) => item && typeof item === 'object' && isReasoning(item))
+    return false
   }
 
   function recHasFinished(rec) {

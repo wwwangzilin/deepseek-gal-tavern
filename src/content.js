@@ -309,7 +309,19 @@ function readPageLastAssistantText() {
     const els = document.querySelectorAll(sel)
     if (els.length === 0) continue
     const last = els[els.length - 1]
-    const text = (last.textContent || '').trim()
+    // 剥离思考块：DeepSeek 页面会把思考内容渲染在独立容器里
+    const clone = last.cloneNode(true)
+    const thinkSel = [
+      '[class*="thinking"]',
+      '[class*="reasoning"]',
+      '[class*="reason"]',
+      '[data-role="thinking"]',
+      '[class*="thought"]',
+    ]
+    for (const t of thinkSel) {
+      clone.querySelectorAll(t).forEach((n) => n.remove())
+    }
+    const text = (clone.textContent || '').trim()
     if (text && text.length > 2) return text
   }
   // 兜底：找含大量文本的最近新增块
@@ -433,8 +445,8 @@ class GalStage {
         this.statusText = ''
         this.setLine('assistant', clean)
       }
-      // 兜底超时：20 秒后若仍无任何输出，重置状态避免永久卡死
-      if (this._sentAt && Date.now() - this._sentAt > 20000 && !this.streamingAssistant) {
+      // 兜底超时：45 秒后若仍无任何输出，重置状态避免永久卡死
+      if (this._sentAt && Date.now() - this._sentAt > 45000 && !this.streamingAssistant) {
         this.running = false
         this.statusText = ''
         this._sentAt = null
@@ -594,6 +606,7 @@ class GalStage {
         <div class="dsg-char-holder" data-role="char-right"></div>
         <div class="dsg-dialogue" data-role="dialogue"></div>
         <div class="dsg-sname" data-role="sname" style="left:46px;top:368px;width:140px;height:24px;color:#e8ebf5;background:transparent;border-color:transparent;border-width:0;border-radius:0"></div>
+        <div class="dsg-backlog" data-role="backlog"></div>
         <div class="dsg-dtext" data-role="dtext" style="left:58px;top:414px;width:844px;height:88px;color:#e8ebf5;font-size:17px;background:transparent;border-color:transparent;border-width:0"></div>
         <button class="dsg-action-btn" data-act="history" style="left:740px;top:14px;width:44px;height:26px;border-color:rgba(255,255,255,.35);border-width:1px;border-radius:4px">历史</button>
         <button class="dsg-action-btn" data-act="auto" style="left:792px;top:14px;width:44px;height:26px;border-color:rgba(255,255,255,.35);border-width:1px;border-radius:4px">自动</button>
@@ -612,6 +625,7 @@ class GalStage {
     this.dtextEl = area.querySelector('[data-role="dtext"]')
     this.snameEl = area.querySelector('[data-role="sname"]')
     this.hintEl = area.querySelector('[data-role="hint"]')
+    this.backlogEl = area.querySelector('[data-role="backlog"]')
     this.charLeftEl = area.querySelector('[data-role="char-left"]')
     this.charRightEl = area.querySelector('[data-role="char-right"]')
 
@@ -755,6 +769,9 @@ class GalStage {
     const line = this.currentLine
     const char = getActiveCharacter()
 
+    // 历史自动堆叠（backlog）：已完成对话自动堆叠在对话框上方
+    this.renderBacklog()
+
     // 名牌
     if (line && line.kind === 'player') {
       this.snameEl.textContent = '你'
@@ -766,11 +783,15 @@ class GalStage {
       this.snameEl.textContent = ''
     }
 
-    // 台词
+    // 台词：思考期间只显示闪动的「思考中」指示，不展示思考内容；
+    // 正文到达后展示正式回复（打字机）。
     const shown = this.type ? this.type.shown : ''
     const hasNext = this.pageIndex < this.pages.length - 1
+    const thinking = this.running && this.statusText === '思考中' && !shown
     let html = ''
-    if (this.running && this.statusText && !shown) {
+    if (thinking) {
+      html = '<span class="dsg-thinking"><span class="dsg-thinking-dot"></span>思考中</span>'
+    } else if (this.running && this.statusText && !shown) {
       html = `<span class="dsg-dtext-status">（${escapeHtml(this.statusText)}…）</span>`
     } else {
       html = escapeHtml(shown)
@@ -789,6 +810,23 @@ class GalStage {
 
     // 立绘
     this.renderCharacters(line, char)
+  }
+
+  /** 历史自动堆叠：已完成对话自动堆叠在对话框上方（最近 5 条） */
+  renderBacklog() {
+    if (!this.backlogEl) return
+    const char = getActiveCharacter()
+    const recent = this.lines.slice(-5)
+    if (recent.length === 0) {
+      this.backlogEl.innerHTML = ''
+      return
+    }
+    this.backlogEl.innerHTML = recent.map((l) => {
+      const name = l.kind === 'player' ? '你' : char.name
+      const color = l.kind === 'player' ? '#4f8cff' : (char.color || '#ff8fa3')
+      const text = (l.text || '').replace(/\s+/g, ' ').slice(0, 60)
+      return `<div class="dsg-backlog-row"><span class="dsg-backlog-name" style="color:${color}">${escapeHtml(name)}</span><span class="dsg-backlog-text">${escapeHtml(text)}</span></div>`
+    }).join('')
   }
 
   renderCharacters(line, char) {

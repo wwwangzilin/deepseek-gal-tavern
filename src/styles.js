@@ -250,6 +250,64 @@ window.GAL_CSS = `
   letter-spacing: .04em;
   animation: dsg-pulse 1.6s ease-in-out infinite;
 }
+/* 思考中指示器：闪动 + 呼吸，不展示思考内容 */
+.dsg-thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  letter-spacing: .18em;
+  color: #8f9bbd;
+  animation: dsg-thinking-blink 1.1s ease-in-out infinite;
+}
+.dsg-thinking .dsg-thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8f7bff, #4f8cff);
+  box-shadow: 0 0 10px rgba(143, 123, 255, .9);
+  animation: dsg-thinking-pulse 1.1s ease-in-out infinite;
+}
+/* 历史堆叠区：对话框上方，半透明小字，自动堆叠最近对话 */
+.dsg-backlog {
+  position: absolute;
+  left: 46px;
+  right: 46px;
+  bottom: 368px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 30;
+}
+.dsg-backlog-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(230, 233, 244, .55);
+  background: rgba(10, 13, 28, .45);
+  padding: 1px 10px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dsg-backlog-row:last-child {
+  color: rgba(230, 233, 244, .72);
+}
+.dsg-backlog-name {
+  flex: none;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+.dsg-backlog-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dsg-sname {
   position: absolute;
   border-style: solid;
@@ -611,6 +669,8 @@ window.GAL_CSS = `
 @keyframes dsg-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 @keyframes dsg-slide-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 @keyframes dsg-rise { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@keyframes dsg-thinking-blink { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes dsg-thinking-pulse { 0%, 100% { transform: scale(1); opacity: .6; } 50% { transform: scale(1.35); opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
   .dsg-char { animation: none; }
