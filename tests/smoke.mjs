@@ -749,7 +749,12 @@ console.log('== skill 命令与工具调用 ==')
   const TK = winS.DSG_TOOLS
   assert(SK && typeof SK.getAllSkills === 'function', 'DSG_SKILLS 已挂载')
   assert(TK && typeof TK.toolSchemasBlock === 'function', 'DSG_TOOLS 已挂载')
-  assert(SK.getAllSkills().length >= 4, '内置 skill 数量 ≥ 4')
+  assert(SK.getAllSkills().length >= 10, '内置 skill 数量 ≥ 10（deepseek++ 完整默认技能库）', 'count=' + SK.getAllSkills().length)
+  // 验证 deepseek++ 原版默认技能都在
+  const skillNames = SK.getAllSkills().map((s) => s.name)
+  const expected = ['memory', 'ultra-think', 'frontend-design', 'doc-coauthoring', 'brand-guidelines', 'skill-creator', 'algorithmic-art', 'canvas-design', 'pptx-design', 'roleplay']
+  const missing = expected.filter((n) => !skillNames.includes(n))
+  assert(missing.length === 0, 'deepseek++ 默认技能齐全', 'missing=' + missing.join(','))
 
   // /skill 命令解析
   const inv = SK.parseSkillCommand('/roleplay 深夜酒馆，气氛暧昧')

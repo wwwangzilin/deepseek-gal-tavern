@@ -1429,6 +1429,43 @@ async function handleDeepSeekMessage(message) {
       const data = await callDeepSeekApi('/chat/history_messages?chat_session_id=' + encodeURIComponent(payload.id))
       return extractHistoryMessages(data)
     }
+    // 角色卡管理（侧栏访问页面 localStorage 的桥接）
+    case 'DS_GET_CHARACTERS': {
+      return readJSON(STORAGE_CHARS, [])
+    }
+    case 'DS_GET_ACTIVE_CHARACTER': {
+      const list = readJSON(STORAGE_CHARS, [])
+      const activeId = readJSON(STORAGE_ACTIVE, null)
+      const found = list.find((c) => c.id === activeId)
+      return found || (Array.isArray(list) && list.length > 0 ? list[0] : null)
+    }
+    case 'DS_SAVE_CHARACTER': {
+      const char = payload
+      if (!char || typeof char !== 'object' || !char.id) throw new Error('角色卡参数无效')
+      const list = readJSON(STORAGE_CHARS, [])
+      const idx = list.findIndex((c) => c.id === char.id)
+      if (idx >= 0) list[idx] = char
+      else list.push(char)
+      writeJSON(STORAGE_CHARS, list)
+      return true
+    }
+    case 'DS_DELETE_CHARACTER': {
+      const { id } = payload
+      let list = readJSON(STORAGE_CHARS, [])
+      list = list.filter((c) => c.id !== id)
+      if (list.length === 0) list = [defaultCharacter()]
+      writeJSON(STORAGE_CHARS, list)
+      if (readJSON(STORAGE_ACTIVE, null) === id) {
+        writeJSON(STORAGE_ACTIVE, list[0].id)
+      }
+      return true
+    }
+    case 'DS_SET_ACTIVE_CHARACTER': {
+      const { id } = payload
+      if (!id) throw new Error('缺少角色 id')
+      writeJSON(STORAGE_ACTIVE, id)
+      return true
+    }
     default:
       return null
   }

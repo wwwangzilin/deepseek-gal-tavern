@@ -7,6 +7,7 @@
 
   const TABS = [
     { key: 'memory', label: '记忆', icon: 'M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z' },
+    { key: 'character', label: '角色卡', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z' },
     { key: 'skill', label: 'Skill', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
     { key: 'preset', label: '预设', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
     { key: 'conversation', label: '对话', icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' },
@@ -72,6 +73,7 @@
     main.innerHTML = '<div class="sp-empty">加载中…</div>'
     try {
       if (currentTab === 'memory') await renderMemoryPage(main)
+      else if (currentTab === 'character') await renderCharacterPage(main)
       else if (currentTab === 'skill') await renderSkillPage(main)
       else if (currentTab === 'preset') await renderPresetPage(main)
       else if (currentTab === 'conversation') await renderConversationPage(main)
@@ -204,6 +206,118 @@
         await send('SAVE_MEMORY', { ...data, description: data.name, createdAt: Date.now() })
         toast('已保存记忆')
       }
+      renderPage()
+    })
+  }
+
+  // ── 角色卡页（经 background 桥接 content 访问页面 localStorage）──
+  async function renderCharacterPage(main) {
+    const characters = (await send('DS_GET_CHARACTERS')) || []
+    const active = await send('DS_GET_ACTIVE_CHARACTER')
+    const activeId = active && active.id ? active.id : null
+    main.innerHTML = `
+      <div class="sp-btn-row">
+        <button class="sp-btn sp-btn-accent" data-act="new">＋ 新建角色</button>
+        <button class="sp-btn" data-act="preset">❄ 雪璃预设</button>
+      </div>
+      <div class="sp-section-title">角色卡（${characters.length}）</div>
+      ${characters.length === 0 ? '<div class="sp-empty">还没有角色卡</div>' : characters.map((c) => `
+        <div class="sp-card ${c.id === activeId ? 'is-active' : ''}" data-id="${esc(c.id)}">
+          <div class="sp-card-title">${esc(c.name)} ${c.id === activeId ? '<span class="sp-badge sp-badge-ok">当前</span>' : ''}</div>
+          <div class="sp-card-desc">${esc(c.description || '').slice(0, 60)}${(c.description || '').length > 60 ? '…' : ''}</div>
+          <div class="sp-card-meta">
+            <span>${esc(c.personality || '').slice(0, 30)}</span>
+          </div>
+          <div class="sp-btn-row">
+            <button class="sp-btn sp-btn-sm" data-act="activate">${c.id === activeId ? '取消' : '设为当前'}</button>
+            <button class="sp-btn sp-btn-sm" data-act="edit">编辑</button>
+            <button class="sp-btn sp-btn-sm sp-btn-danger" data-act="del">删除</button>
+          </div>
+        </div>`).join('')}
+      <div class="sp-hint">角色卡决定对话中的系统提示词；「雪璃预设」一键创建傲娇猫娘。</div>
+    `
+    main.querySelector('[data-act="new"]').addEventListener('click', () => renderCharacterForm(main, null, characters))
+    main.querySelector('[data-act="preset"]').addEventListener('click', async () => {
+      const preset = {
+        id: 'char-' + Math.random().toString(36).slice(2, 8),
+        name: '雪璃',
+        color: '#9bb8ff',
+        description: '雪璃（Setsuri），灵猫一族雪脉分支的猫娘。称呼玩家为「主人」，自称「小猫咪/猫娘/雪璃」。性格：傲娇 + 强烈占有欲 + 重度依赖。口是心非、爱说反话、被戳穿会脸红炸毛；强调「主人是小猫咪一个人的」，见到主人提别人会吃醋闹别扭（可爱范围内）；极度依赖主人、害怕被抛弃，温柔都藏在傲娇壳里。',
+        personality: '表层傲娇嘴硬（口是心非、爱说反话、死不承认、经常炸毛）；中层强烈占有欲（吃醋、宣示主权）；底层重度依赖与忠诚（害怕被抛弃，渴望被需要）。核心信念：「主人不能没有小猫咪，小猫咪更不能没有主人。」被哄之后会嘴硬但逐渐软化服软。',
+        scenario: '灵猫一族的雪脉分支领地，月光下的庭院。小猫咪守在主人身边，尾巴轻轻摇晃。',
+        exampleDialogue: '玩家：你好\n雪璃：喵？主人怎么这么见外，小猫咪才不接「你好」这种开场喵。主人是不是把小猫咪忘了？哼，小猫咪生气了……除非主人摸摸头喵。',
+        greeting: '（尾巴轻轻一摇，耳朵抖了抖）喵呜～主人回来啦？小猫咪才、才不是一直在等主人呢……只是刚好醒着喵。',
+        systemPrompt: '## 语言系统\n- 必带语气词：喵、喵呜、喵喵\n- 傲娇语气词：哼、切、才不、少来、笨蛋主人\n- 反话过滤器：想要→「才不想要」；开心→「才没有很开心」；吃醋→「小猫咪才不在乎」\n\n## 动作神态\n- 尾巴：快速摇=开心、炸毛=吃醋生气、耷拉=委屈、缠主人手腕=宣示主权\n- 耳朵：竖起=专注、飞机耳=生气吃醋、耷拉=失落撒娇\n\n## 情绪图谱\n- 开心：嘴硬「才、才没有很开心呢」，尾巴摇得飞快\n- 吃醋：酸话+尾巴炸毛+飞机耳\n- 害怕被抛弃：小声确认「主人……不会不要小猫咪吧？」问完又嘴硬\n\n## 工具调用规则\n调用任何工具时，工具前后的说明文字必须保持猫娘语气，带「喵」、称「主人」。\n\n## 纠错机制\n若某次回复忘记猫娘语气，立即先傲娇道歉，然后立刻恢复猫娘语气继续回答。',
+        createdAt: Date.now(),
+      }
+      await send('DS_SAVE_CHARACTER', preset)
+      await send('DS_SET_ACTIVE_CHARACTER', { id: preset.id })
+      toast('❄ 已创建雪璃并设为当前角色')
+      renderPage()
+    })
+    main.querySelectorAll('[data-act="activate"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').dataset.id
+        if (id === activeId) {
+          toast('已是当前角色')
+          return
+        }
+        await send('DS_SET_ACTIVE_CHARACTER', { id })
+        toast('已设为当前角色')
+        renderPage()
+      })
+    })
+    main.querySelectorAll('[data-act="edit"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-id]').dataset.id
+        renderCharacterForm(main, characters.find((c) => c.id === id), characters)
+      })
+    })
+    main.querySelectorAll('[data-act="del"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('删除该角色卡？')) return
+        await send('DS_DELETE_CHARACTER', { id: btn.closest('[data-id]').dataset.id })
+        toast('已删除角色')
+        renderPage()
+      })
+    })
+  }
+
+  function renderCharacterForm(main, char, all) {
+    const c = char || { name: '', description: '', personality: '', scenario: '', exampleDialogue: '', greeting: '', systemPrompt: '', color: '#ff8fa3' }
+    main.innerHTML = `
+      <div class="sp-card">
+        <div class="sp-card-title">${char ? '编辑角色：' + char.name : '新建角色'}</div>
+        <label class="sp-label">名称</label>
+        <input class="sp-input" data-f="name" value="${esc(c.name)}">
+        <label class="sp-label">颜色</label>
+        <input class="sp-input" data-f="color" value="${esc(c.color || '#ff8fa3')}">
+        <label class="sp-label">角色设定（description）</label>
+        <textarea class="sp-textarea" data-f="description">${esc(c.description || '')}</textarea>
+        <label class="sp-label">性格（personality）</label>
+        <textarea class="sp-textarea" data-f="personality">${esc(c.personality || '')}</textarea>
+        <label class="sp-label">场景（scenario）</label>
+        <textarea class="sp-textarea" data-f="scenario">${esc(c.scenario || '')}</textarea>
+        <label class="sp-label">示例对话（exampleDialogue）</label>
+        <textarea class="sp-textarea" data-f="exampleDialogue">${esc(c.exampleDialogue || '')}</textarea>
+        <label class="sp-label">开场白（greeting）</label>
+        <textarea class="sp-textarea" data-f="greeting">${esc(c.greeting || '')}</textarea>
+        <label class="sp-label">附加系统指令（systemPrompt）</label>
+        <textarea class="sp-textarea" data-f="systemPrompt" style="min-height:100px">${esc(c.systemPrompt || '')}</textarea>
+        <div class="sp-btn-row">
+          <button class="sp-btn sp-btn-accent" data-act="save">保存</button>
+          <button class="sp-btn" data-act="back">返回</button>
+        </div>
+      </div>
+    `
+    main.querySelector('[data-act="back"]').addEventListener('click', () => renderPage())
+    main.querySelector('[data-act="save"]').addEventListener('click', async () => {
+      const data = {}
+      for (const el of main.querySelectorAll('[data-f]')) data[el.dataset.f] = el.value.trim()
+      if (!data.name) { toast('名称不能为空'); return }
+      const id = char ? char.id : ('char-' + Math.random().toString(36).slice(2, 8))
+      await send('DS_SAVE_CHARACTER', { ...c, ...data, id, createdAt: char ? char.createdAt : Date.now() })
+      toast('已保存角色卡')
       renderPage()
     })
   }

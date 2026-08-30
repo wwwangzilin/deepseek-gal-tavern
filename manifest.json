@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DeepSeek GAL 酒馆",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "把网页版 DeepSeek 变成 Galgame 角色扮演酒馆，完整内置 DeepSeek++ 功能：记忆系统/Skill/预设/对话管理/MCP 工具/侧栏管理。",
   "icons": {
     "16": "icons/icon16.png",

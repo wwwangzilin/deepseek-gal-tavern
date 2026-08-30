@@ -69,7 +69,13 @@ async function handleMessage(message, sender) {
     case 'SAVE_SYNC_CONFIG': { await globalThis.DSG_SYNC.saveSyncConfig(message.payload); return { ok: true } }
     case 'WEBDAV_TEST': { await globalThis.DSG_SYNC.webdavTest(message.payload); return { ok: true } }
     case 'WEBDAV_SYNC': { const result = await globalThis.DSG_SYNC.webdavSync(); await broadcastStateUpdate(sender.tab && sender.tab.id); return result }
-    default: return null
+    default:
+      // 通用 DS_* 透传：DS_GET_CHARACTERS / DS_SAVE_CHARACTER 等由 content 处理
+      if (typeof message.type === 'string' && message.type.startsWith('DS_')) {
+        const data = await sendDeepSeekTabMessage(message)
+        return { ok: true, data }
+      }
+      return null
   }
 }
 
