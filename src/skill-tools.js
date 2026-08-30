@@ -122,7 +122,7 @@
 
   const CHARACTER_LEARN_SCHEMA = '{"type":"function","function":{"name":"character_learn","description":"在角色扮演对话中，把新学到的角色设定（角色背景、性格细节、关系、口癖、剧情事实等）补充进当前角色卡。仅在出现值得长期记住的新设定时调用。","parameters":{"type":"object","properties":{"field":{"type":"string","enum":["description","personality","scenario","exampleDialogue"],"description":"要补充的角色卡字段：description=角色设定, personality=性格, scenario=场景, exampleDialogue=示例对话"},"content":{"type":"string","description":"要补充/追加的内容（简短、事实性，不要对话原文）"},"replace":{"type":"boolean","description":"true=替换该字段内容, false(默认)=追加到现有内容末尾"}},"required":["field","content"]}}}'
 
-  const TOOL_NAMES = ['memory_save', 'character_learn']
+  const TOOL_NAMES = ['memory_save', 'character_learn', 'web_search', 'web_fetch']
 
   function toolSchemasBlock() {
     return [
@@ -170,9 +170,35 @@
       'Invalid formats: <invoke name="character_learn">...</invoke>, <tool_call>...</tool_call>',
       'Parameters JSON Schema: ' + CHARACTER_LEARN_SCHEMA,
       '',
+      '### Tool web_search',
+      'Title: 搜索互联网',
+      'Description: 在 Bing 搜索关键词，返回与查询相关的网页标题、URL 和摘要',
+      'Valid call format for web_search:',
+      '<web_search>',
+      '{',
+      '  "query": "value"',
+      '}',
+      '</web_search>',
+      'Invalid formats: <invoke name="web_search">...</invoke>, <tool_call>...</tool_call>',
+      'Parameters JSON Schema: {"type":"object","properties":{"query":{"type":"string","description":"搜索查询关键词"},"topK":{"type":"integer","description":"返回结果数量，默认 5"}},"required":["query"],"additionalProperties":false}',
+      '',
+      '### Tool web_fetch',
+      'Title: 获取网页',
+      'Description: 下载指定 URL 的页面内容，返回可视文本（自动去除导航、脚本和样式）',
+      'Valid call format for web_fetch:',
+      '<web_fetch>',
+      '{',
+      '  "url": "value"',
+      '}',
+      '</web_fetch>',
+      'Invalid formats: <invoke name="web_fetch">...</invoke>, <tool_call>...</tool_call>',
+      'Parameters JSON Schema: {"type":"object","properties":{"url":{"type":"string","description":"要抓取的完整 URL（http:// 或 https://）"}},"required":["url"],"additionalProperties":false}',
+      '',
       '## 工具使用规则',
       '- 对话中出现用户明确要求记住、或值得长期保存的重要信息时，调用 memory_save',
       '- 角色扮演中，当玩家透露了角色的新设定（或剧情推进揭示了新背景），调用 character_learn 把新设定补充进角色卡（只记录事实性内容，不要记录玩家原话）',
+      '- 需要实时信息、新闻、事件、汇率、天气等时，调用 web_search 搜索互联网',
+      '- 需要读取指定网页内容时，调用 web_fetch 获取页面可视文本',
       '- 工具调用块放在回复的任意位置，调用后继续正常回复',
       '- 不要用 Markdown 代码围栏包裹工具调用块',
       'You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.',

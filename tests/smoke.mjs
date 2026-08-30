@@ -1011,5 +1011,168 @@ console.log('== MCP 工具链路 ==')
   assert(after.length === 0, 'MCP 服务删除')
 }
 
+console.log('== 网络工具 + 保存项（deepseek++ 核心功能）==')
+{
+  const memStore4 = new Map()
+  const fakeStorage4 = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore4.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore4.set(key, value),
+    removeValue: async (key) => memStore4.delete(key),
+  }
+  const fakeGlobal4 = { Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp, DSG_STORAGE: fakeStorage4, URL, fetch: async () => { throw new Error('network test uses no fetch') } }
+  fakeGlobal4.globalThis = fakeGlobal4
+  function loadCore4(name) {
+    const code = readFileSync(join(root, 'src', 'core', name), 'utf8')
+    new Function('globalThis', 'Intl', 'crypto', 'console', 'URL', 'fetch', code)(fakeGlobal4, Intl, crypto, console, URL, fakeGlobal4.fetch)
+  }
+  loadCore4('network.js')
+  loadCore4('saved-items.js')
+
+  const NW = fakeGlobal4.DSG_NETWORK
+  const SV = fakeGlobal4.DSG_SAVED
+  assert(NW && typeof NW.executeWebToolCall === 'function', 'DSG_NETWORK 已挂载')
+  assert(NW.WEB_TOOL_NAMES.includes('web_search') && NW.WEB_TOOL_NAMES.includes('web_fetch'), 'web_search/web_fetch 已注册')
+  assert(NW.WEB_TOOL_DESCRIPTORS.length === 2, '网络工具 descriptor 2 个')
+  assert(NW.isWebToolName('web_search') && !NW.isWebToolName('memory_save'), 'isWebToolName 判断正确')
+
+  // 空参数校验
+  const emptySearch = await NW.executeWebToolCall({ name: 'web_search', payload: {} })
+  assert(emptySearch.ok === false, 'web_search 空参数校验')
+
+  // web_fetch 协议白名单：file: 应拒绝
+  const badScheme = await NW.executeWebToolCall({ name: 'web_fetch', payload: { url: 'file:///etc/passwd' } })
+  assert(badScheme.ok === false && badScheme.error && badScheme.error.code === 'unsupported_url_scheme', 'web_fetch 拒绝非 http/https')
+
+  // 保存项 CRUD
+  await SV.saveSavedItem({ kind: 'snippet', title: '常用开场白', content: '喵呜～主人想聊什么？', tags: ['prompt', '猫娘'] })
+  await SV.saveSavedItem({ kind: 'bookmark', title: '参考文档', content: 'https://example.com/docs', sourceUrl: 'https://example.com/docs', tags: ['参考'] })
+  const allItems = await SV.getAllSavedItems()
+  assert(allItems.length === 2, '保存项创建成功')
+  const snippetItem = allItems.find((s) => s.kind === 'snippet')
+  assert(snippetItem && snippetItem.title === '常用开场白', '保存项 snippet 类型正确')
+  const found = allItems.find((s) => s.kind === 'bookmark')
+  assert(found && found.sourceUrl === 'https://example.com/docs', '书签 sourceUrl 保留')
+
+  // 搜索
+  const searchHit = await SV.searchSavedItems('猫娘')
+  assert(searchHit.length === 1 && searchHit[0].title === '常用开场白', '保存项按标签搜索')
+
+  // 删除
+  const delTarget = allItems.find((s) => s.kind === 'snippet')
+  await SV.deleteSavedItem(delTarget.id)
+  const afterDel = await SV.getAllSavedItems()
+  assert(afterDel.length === 1, '保存项删除')
+}
+
+console.log('== 对话导出（deepseek++ 核心功能）==')
+{
+  const memStore5 = new Map()
+  const fakeStorage5 = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore5.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore5.set(key, value),
+    removeValue: async (key) => memStore5.delete(key),
+  }
+  const fakeGlobal5 = { Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp, DSG_STORAGE: fakeStorage5 }
+  fakeGlobal5.globalThis = fakeGlobal5
+  const codeExport = readFileSync(join(root, 'src', 'core', 'export.js'), 'utf8')
+  new Function('globalThis', 'Intl', 'crypto', 'console', codeExport)(fakeGlobal5, Intl, crypto, console)
+  const EX = fakeGlobal5.DSG_EXPORT
+  assert(EX && typeof EX.buildExportFile === 'function', 'DSG_EXPORT 已挂载')
+
+  const sample = {
+    sessions: [{
+      title: '测试对话',
+      updatedAt: Date.now(),
+      messages: [
+        { role: 'user', content: '你好', createdAt: Date.now() },
+        { role: 'assistant', content: '喵呜～你好主人', createdAt: Date.now() },
+      ],
+    }],
+  }
+  const html = EX.buildExportFile(sample, 'html')
+  assert(html.format === 'html' && html.content.includes('<!doctype html>'), 'HTML 导出')
+  assert(html.content.includes('测试对话') && html.content.includes('喵呜～你好主人'), 'HTML 导出包含对话内容')
+  assert(html.content.includes('用户') && html.content.includes('AI'), 'HTML 角色区分')
+
+  const md = EX.buildExportFile(sample, 'md')
+  assert(md.format === 'md' && md.content.includes('**用户**：你好'), 'Markdown 导出')
+  assert(md.content.includes('**AI**：喵呜～你好主人'), 'Markdown 导出 AI 消息')
+
+  const txt = EX.buildExportFile(sample, 'txt')
+  assert(txt.format === 'txt' && txt.content.includes('用户：你好'), '纯文本导出')
+}
+
+console.log('== 自动化任务（deepseek++ 核心功能）==')
+{
+  const memStore6 = new Map()
+  const fakeStorage6 = {
+    getValue: async (key, fallback, normalize) => {
+      const raw = memStore6.get(key)
+      if (raw === undefined) return fallback
+      return normalize ? normalize(raw) : raw
+    },
+    setValue: async (key, value) => memStore6.set(key, value),
+    removeValue: async (key) => memStore6.delete(key),
+  }
+  const fakeGlobal6 = { Intl, crypto, Date, Math, Set, Map, Array, String, Number, console, JSON, RegExp, DSG_STORAGE: fakeStorage6 }
+  fakeGlobal6.globalThis = fakeGlobal6
+  const codeAuto = readFileSync(join(root, 'src', 'core', 'automation.js'), 'utf8')
+  new Function('globalThis', 'Intl', 'crypto', 'console', codeAuto)(fakeGlobal6, Intl, crypto, console)
+  const AUTO = fakeGlobal6.DSG_AUTOMATION
+  assert(AUTO && typeof AUTO.calculateNextRunAt === 'function', 'DSG_AUTOMATION 已挂载')
+
+  // cron 5 段解析：每天 9 点
+  const now = Date.now()
+  const cronNext = AUTO.calculateNextRunAt({
+    enabled: true,
+    schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai' },
+  }, now)
+  assert(typeof cronNext === 'number' && cronNext > now, 'cron 计算下次运行', JSON.stringify(cronNext))
+  const cronDate = new Date(cronNext)
+  assert(cronDate.getHours() === 9 && cronDate.getMinutes() === 0, 'cron 命中 9:00', cronDate.toISOString())
+
+  // 非法 cron（4 段）
+  const badCron = AUTO.calculateNextRunAt({
+    enabled: true,
+    schedule: { kind: 'cron', expression: '0 9 * *', timezone: 'Asia/Shanghai' },
+  }, now)
+  assert(badCron && badCron.error, '非法 cron 报错')
+
+  // RRULE：每小时
+  const rruleNext = AUTO.calculateNextRunAt({
+    enabled: true,
+    schedule: { kind: 'rrule', expression: 'FREQ=HOURLY;INTERVAL=1', timezone: 'Asia/Shanghai' },
+  }, now)
+  assert(typeof rruleNext === 'number' && rruleNext - now >= 3600000, 'RRULE 每小时下次运行')
+
+  // 手动任务 → null
+  const manualNext = AUTO.calculateNextRunAt({
+    enabled: true,
+    schedule: { kind: 'manual', timezone: 'Asia/Shanghai' },
+  }, now)
+  assert(manualNext === null, '手动任务无定时')
+
+  // 任务 CRUD
+  const task = await AUTO.saveTask({
+    id: 't1', name: '每日总结', prompt: '请总结今天的对话',
+    schedule: { kind: 'cron', expression: '30 22 * * *', timezone: 'Asia/Shanghai' },
+    enabled: true,
+  })
+  assert(task.id === 't1' && task.nextRunAt > now, '任务保存并计算下次运行')
+  const tasks = await AUTO.getAllTasks()
+  assert(tasks.length === 1, '任务列表')
+  await AUTO.deleteTask('t1')
+  const afterDel = await AUTO.getAllTasks()
+  assert(afterDel.length === 0, '任务删除')
+}
+
 console.log(`\n结果：${passed} 通过，${failed} 失败`)
 process.exit(failed > 0 ? 1 : 0)

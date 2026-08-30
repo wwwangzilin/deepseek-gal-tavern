@@ -8,9 +8,11 @@
   const TABS = [
     { key: 'memory', label: '记忆', icon: 'M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z' },
     { key: 'character', label: '角色卡', icon: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z' },
+    { key: 'saved', label: '保存项', icon: 'M17 3H7a2 2 0 00-2 2v16l7-3 7 3V5a2 2 0 00-2-2z' },
     { key: 'skill', label: 'Skill', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
     { key: 'preset', label: '预设', icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
     { key: 'conversation', label: '对话', icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' },
+    { key: 'automation', label: '自动化', icon: 'M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z' },
     { key: 'mcp', label: 'MCP', icon: 'M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z' },
     { key: 'settings', label: '设置', icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z' },
   ]
@@ -74,9 +76,11 @@
     try {
       if (currentTab === 'memory') await renderMemoryPage(main)
       else if (currentTab === 'character') await renderCharacterPage(main)
+      else if (currentTab === 'saved') await renderSavedItemsPage(main)
       else if (currentTab === 'skill') await renderSkillPage(main)
       else if (currentTab === 'preset') await renderPresetPage(main)
       else if (currentTab === 'conversation') await renderConversationPage(main)
+      else if (currentTab === 'automation') await renderAutomationPage(main)
       else if (currentTab === 'mcp') await renderMcpPage(main)
       else if (currentTab === 'settings') await renderSettingsPage(main)
     } catch (err) {
@@ -322,6 +326,132 @@
     })
   }
 
+  // ── 保存项页（snippets/书签，deepseek++ 核心功能）────────────────
+  async function renderSavedItemsPage(main) {
+    const items = (await send('GET_SAVED_ITEMS')) || []
+    main.innerHTML = `
+      <div class="sp-btn-row">
+        <button class="sp-btn sp-btn-accent" data-act="new">＋ 新建保存项</button>
+        <button class="sp-btn" data-act="export">导出 JSON</button>
+      </div>
+      <label class="sp-label">搜索</label>
+      <input class="sp-input" data-f="search" placeholder="搜索标题 / 内容 / 标签…">
+      <div class="sp-section-title">保存项（${items.length}）</div>
+      ${items.length === 0 ? '<div class="sp-empty">还没有保存项。可保存常用 prompt、回答片段或书签。</div>' : items.map((s) => `
+        <div class="sp-card" data-id="${esc(s.id)}">
+          <div class="sp-card-title">${s.kind === 'bookmark' ? '🔖 ' : '📄 '}${esc(s.title)}</div>
+          <div class="sp-card-desc">${esc(s.content || '').slice(0, 80)}${(s.content || '').length > 80 ? '…' : ''}</div>
+          <div class="sp-card-meta">
+            ${(s.tags || []).map((t) => `<span class="sp-tag">${esc(t)}</span>`).join('')}
+            ${s.sourceUrl ? `<span class="sp-mono" style="font-size:10px">${esc(s.sourceUrl).slice(0, 40)}</span>` : ''}
+          </div>
+          <div class="sp-btn-row">
+            <button class="sp-btn sp-btn-sm" data-act="edit">编辑</button>
+            <button class="sp-btn sp-btn-sm sp-btn-danger" data-act="del">删除</button>
+          </div>
+        </div>`).join('')}
+    `
+    main.querySelector('[data-act="new"]').addEventListener('click', () => renderSavedItemForm(main, null, items))
+    main.querySelector('[data-act="export"]').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'gal-saved-items.json'
+      a.click()
+      URL.revokeObjectURL(a.href)
+      toast('已导出保存项')
+    })
+    const searchInput = main.querySelector('[data-f="search"]')
+    searchInput.addEventListener('input', async () => {
+      const q = searchInput.value.trim()
+      const filtered = q ? await send('SEARCH_SAVED_ITEMS', { query: q }) : items
+      renderSavedItemsList(main, filtered || [], q)
+    })
+    main.querySelectorAll('[data-act="del"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('删除该保存项？')) return
+        await send('DELETE_SAVED_ITEM', { id: btn.closest('[data-id]').dataset.id })
+        toast('已删除')
+        renderPage()
+      })
+    })
+    main.querySelectorAll('[data-act="edit"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-id]').dataset.id
+        renderSavedItemForm(main, items.find((s) => s.id === id), items)
+      })
+    })
+  }
+
+  function renderSavedItemsList(main, items, query) {
+    const list = main.querySelector('.sp-saved-list')
+    if (!list) return
+    list.innerHTML = items.length === 0
+      ? '<div class="sp-empty">没有匹配的保存项</div>'
+      : items.map((s) => `
+        <div class="sp-card" data-id="${esc(s.id)}">
+          <div class="sp-card-title">${s.kind === 'bookmark' ? '🔖 ' : '📄 '}${esc(s.title)}</div>
+          <div class="sp-card-desc">${esc(s.content || '').slice(0, 80)}</div>
+          <div class="sp-card-meta">${(s.tags || []).map((t) => `<span class="sp-tag">${esc(t)}</span>`).join('')}</div>
+          <div class="sp-btn-row">
+            <button class="sp-btn sp-btn-sm" data-act="edit">编辑</button>
+            <button class="sp-btn sp-btn-sm sp-btn-danger" data-act="del">删除</button>
+          </div>
+        </div>`).join('')
+    list.querySelectorAll('[data-act="del"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('删除该保存项？')) return
+        await send('DELETE_SAVED_ITEM', { id: btn.closest('[data-id]').dataset.id })
+        toast('已删除')
+        renderPage()
+      })
+    })
+    list.querySelectorAll('[data-act="edit"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-id]').dataset.id
+        renderSavedItemForm(main, items.find((s) => s.id === id), items)
+      })
+    })
+  }
+
+  function renderSavedItemForm(main, item, all) {
+    const s = item || { kind: 'snippet', title: '', content: '', tags: [], sourceUrl: '' }
+    main.innerHTML = `
+      <div class="sp-card">
+        <div class="sp-card-title">${item ? '编辑保存项' : '新建保存项'}</div>
+        <label class="sp-label">类型</label>
+        <select class="sp-select" data-f="kind">
+          <option value="snippet" ${s.kind === 'snippet' ? 'selected' : ''}>片段（snippet）</option>
+          <option value="bookmark" ${s.kind === 'bookmark' ? 'selected' : ''}>书签（bookmark）</option>
+        </select>
+        <label class="sp-label">标题</label>
+        <input class="sp-input" data-f="title" value="${esc(s.title)}">
+        <label class="sp-label">内容</label>
+        <textarea class="sp-textarea" data-f="content" style="min-height:100px">${esc(s.content || '')}</textarea>
+        <label class="sp-label">标签（逗号分隔）</label>
+        <input class="sp-input" data-f="tags" value="${esc((s.tags || []).join(', '))}">
+        <label class="sp-label">来源 URL（可选）</label>
+        <input class="sp-input" data-f="sourceUrl" value="${esc(s.sourceUrl || '')}">
+        <div class="sp-btn-row">
+          <button class="sp-btn sp-btn-accent" data-act="save">保存</button>
+          <button class="sp-btn" data-act="back">返回</button>
+        </div>
+      </div>
+    `
+    main.querySelector('[data-act="back"]').addEventListener('click', () => renderPage())
+    main.querySelector('[data-act="save"]').addEventListener('click', async () => {
+      const data = {}
+      for (const el of main.querySelectorAll('[data-f]')) {
+        if (el.dataset.f === 'tags') data.tags = el.value.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
+        else data[el.dataset.f] = el.value.trim()
+      }
+      if (!data.title) { toast('标题不能为空'); return }
+      await send('SAVE_SAVED_ITEM', { ...s, ...data, id: item ? item.id : undefined })
+      toast('已保存')
+      renderPage()
+    })
+  }
+
   // ── Skill 页 ─────────────────────────────────────────────────────
   async function renderSkillPage(main) {
     const skills = (await send('GET_SKILLS')) || []
@@ -490,6 +620,7 @@
           </div>
           <div class="sp-btn-row">
             <button class="sp-btn sp-btn-sm" data-act="rename">重命名</button>
+            <button class="sp-btn sp-btn-sm" data-act="export">导出</button>
             <button class="sp-btn sp-btn-sm sp-btn-danger" data-act="del">删除</button>
           </div>
         </div>`).join('')}
@@ -525,6 +656,145 @@
         toast('已重命名')
         renderPage()
       })
+    })
+    main.querySelectorAll('[data-act="export"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').dataset.id
+        const format = prompt('导出格式（html / md / txt）：', 'html')
+        if (!format) return
+        toast('正在导出…')
+        try {
+          const file = await send('EXPORT_CONVERSATION', { sessionId: id, format: format.toLowerCase() })
+          if (file && file.content) {
+            const blob = new Blob([file.content], { type: file.mimeType })
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = file.filename
+            a.click()
+            URL.revokeObjectURL(a.href)
+            toast('✅ 已导出 ' + file.filename)
+          } else {
+            toast('❌ 导出失败')
+          }
+        } catch (err) {
+          toast('❌ 导出失败：' + (err && err.message ? err.message : err))
+        }
+      })
+    })
+  }
+
+  // ── 自动化任务页（deepseek++ 核心功能）──────────────────────────
+  async function renderAutomationPage(main) {
+    const tasks = (await send('GET_AUTOMATION_TASKS')) || []
+    main.innerHTML = `
+      <div class="sp-btn-row"><button class="sp-btn sp-btn-accent" data-act="new">＋ 新建任务</button></div>
+      <div class="sp-section-title">自动化任务（${tasks.length}）</div>
+      ${tasks.length === 0 ? '<div class="sp-empty">还没有任务。可创建定时任务，自动发送到 DeepSeek 执行。</div>' : tasks.map((t) => `
+        <div class="sp-card ${t.enabled ? '' : ''}" data-id="${esc(t.id)}">
+          <div class="sp-card-title">${esc(t.name)} <span class="sp-badge ${t.enabled ? 'sp-badge-ok' : 'sp-badge-err'}">${t.enabled ? '启用' : '停用'}</span> ${t.lastStatus === 'running' ? '<span class="sp-badge sp-badge-ok">运行中</span>' : ''}</div>
+          <div class="sp-card-desc">${esc(t.prompt || '').slice(0, 60)}${(t.prompt || '').length > 60 ? '…' : ''}</div>
+          <div class="sp-card-meta">
+            <span>${t.schedule.kind === 'manual' ? '手动触发' : esc(t.schedule.expression)}</span>
+            ${t.nextRunAt ? '<span>下次：' + new Date(t.nextRunAt).toLocaleString() + '</span>' : ''}
+            ${t.lastRunAt ? '<span>上次：' + new Date(t.lastRunAt).toLocaleString() + '</span>' : ''}
+            ${t.lastStatus === 'error' ? '<span style="color:var(--sp-danger)">' + esc(t.lastError || '') + '</span>' : ''}
+          </div>
+          <div class="sp-btn-row">
+            <button class="sp-btn sp-btn-sm" data-act="run">立即运行</button>
+            <button class="sp-btn sp-btn-sm" data-act="toggle">${t.enabled ? '停用' : '启用'}</button>
+            <button class="sp-btn sp-btn-sm" data-act="edit">编辑</button>
+            <button class="sp-btn sp-btn-sm sp-btn-danger" data-act="del">删除</button>
+          </div>
+        </div>`).join('')}
+      <div class="sp-hint">调度支持 5 段 cron（如 <span class="sp-mono">0 9 * * *</span>）或 RRULE（如 <span class="sp-mono">FREQ=HOURLY;INTERVAL=1</span>），最小间隔 15 分钟。</div>
+    `
+    main.querySelector('[data-act="new"]').addEventListener('click', () => renderAutomationForm(main, null, tasks))
+    main.querySelectorAll('[data-act="run"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').dataset.id
+        toast('正在运行任务…')
+        const result = await send('RUN_AUTOMATION_TASK', { id })
+        if (result && result.ok) toast('✅ 任务已发送到 DeepSeek')
+        else toast('❌ ' + ((result && result.error) || '运行失败'))
+        renderPage()
+      })
+    })
+    main.querySelectorAll('[data-act="toggle"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').dataset.id
+        const task = tasks.find((t) => t.id === id)
+        if (task) {
+          await send('SAVE_AUTOMATION_TASK', { ...task, enabled: !task.enabled })
+          renderPage()
+        }
+      })
+    })
+    main.querySelectorAll('[data-act="edit"]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.closest('[data-id]').dataset.id
+        renderAutomationForm(main, tasks.find((t) => t.id === id), tasks)
+      })
+    })
+    main.querySelectorAll('[data-act="del"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('删除该任务？')) return
+        await send('DELETE_AUTOMATION_TASK', { id: btn.closest('[data-id]').dataset.id })
+        toast('已删除任务')
+        renderPage()
+      })
+    })
+  }
+
+  function renderAutomationForm(main, task, all) {
+    const t = task || { name: '', prompt: '', schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'Asia/Shanghai' }, enabled: true }
+    main.innerHTML = `
+      <div class="sp-card">
+        <div class="sp-card-title">${task ? '编辑任务：' + task.name : '新建自动化任务'}</div>
+        <label class="sp-label">名称</label>
+        <input class="sp-input" data-f="name" value="${esc(t.name)}">
+        <label class="sp-label">任务 Prompt（发送给 DeepSeek 的内容）</label>
+        <textarea class="sp-textarea" data-f="prompt" style="min-height:90px">${esc(t.prompt || '')}</textarea>
+        <label class="sp-label">调度类型</label>
+        <select class="sp-select" data-f="kind">
+          <option value="manual" ${t.schedule.kind === 'manual' ? 'selected' : ''}>手动触发</option>
+          <option value="cron" ${t.schedule.kind === 'cron' ? 'selected' : ''}>Cron 定时</option>
+          <option value="rrule" ${t.schedule.kind === 'rrule' ? 'selected' : ''}>RRULE 周期</option>
+        </select>
+        <label class="sp-label">表达式（cron: 5 段如 0 9 * * *；rrule: 如 FREQ=HOURLY;INTERVAL=1）</label>
+        <input class="sp-input" data-f="expression" value="${esc(t.schedule.expression || '')}">
+        <div class="sp-row"><span>启用</span><input type="checkbox" class="sp-checkbox" data-f="enabled" ${t.enabled !== false ? 'checked' : ''}></div>
+        <div class="sp-btn-row">
+          <button class="sp-btn sp-btn-accent" data-act="save">保存</button>
+          <button class="sp-btn" data-act="back">返回</button>
+        </div>
+      </div>
+    `
+    main.querySelector('[data-act="back"]').addEventListener('click', () => renderPage())
+    main.querySelector('[data-act="save"]').addEventListener('click', async () => {
+      const data = {}
+      for (const el of main.querySelectorAll('[data-f]')) {
+        if (el.dataset.f === 'enabled') data.enabled = el.checked
+        else data[el.dataset.f] = el.value.trim()
+      }
+      if (!data.name) { toast('名称不能为空'); return }
+      const id = task ? task.id : ('task-' + Math.random().toString(36).slice(2, 8))
+      const schedule = {
+        kind: data.kind,
+        expression: data.kind === 'manual' ? '' : data.expression,
+        timezone: 'Asia/Shanghai',
+      }
+      const payload = { ...t, id, name: data.name, prompt: data.prompt, schedule, enabled: data.enabled }
+      // 校验调度
+      if (schedule.kind !== 'manual') {
+        const validation = await send('VALIDATE_AUTOMATION_SCHEDULE', payload)
+        if (validation && validation.ok === false) {
+          toast('❌ 调度无效：' + (validation.error || '未知错误'))
+          return
+        }
+      }
+      await send('SAVE_AUTOMATION_TASK', payload)
+      toast('已保存任务')
+      renderPage()
     })
   }
 

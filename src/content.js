@@ -520,12 +520,13 @@ class GalStage {
         return
       }
 
-      // 本地工具：记忆走 background（chrome.storage），角色学习就地执行
-      if (call.name === 'memory_save' || call.name === 'memory_update' || call.name === 'memory_delete') {
+      // 本地工具：记忆 + 网络工具走 background（chrome.storage / Bing 搜索），角色学习就地执行
+      if (call.name === 'memory_save' || call.name === 'memory_update' || call.name === 'memory_delete' || call.name === 'web_search' || call.name === 'web_fetch') {
         try {
           chrome.runtime.sendMessage({ type: 'EXECUTE_TOOL_CALL', payload: call }, (result) => {
             if (!chrome.runtime.lastError && result) {
-              this.showToolNote((result.ok ? '🧠 ' : '⚠️ ') + (result.detail || result.summary || call.name))
+              const icon = call.name === 'web_search' || call.name === 'web_fetch' ? '🔎' : '🧠'
+              this.showToolNote((result.ok ? icon + ' ' : '⚠️ ') + (result.detail || result.summary || call.name))
             }
           })
         } catch {
@@ -1465,6 +1466,14 @@ async function handleDeepSeekMessage(message) {
       if (!id) throw new Error('缺少角色 id')
       writeJSON(STORAGE_ACTIVE, id)
       return true
+    }
+    case 'DS_RUN_TASK': {
+      // 自动化任务：把 prompt 发送到 DeepSeek（复用页面输入框管线）
+      const prompt = payload.prompt || ''
+      if (!prompt) throw new Error('任务 prompt 为空')
+      const ok = sendToDeepSeek(prompt)
+      if (!ok) throw new Error('未找到 DeepSeek 输入框')
+      return { sessionId: payload.sessionId || null }
     }
     default:
       return null

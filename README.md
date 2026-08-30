@@ -16,10 +16,14 @@
 | --- | --- |
 | 🎭 **角色卡** | 侧栏管理：新建/编辑/切换/删除、❄ 雪璃预设、角色卡随对话学习成长（character_learn） |
 | 🧠 **记忆系统** | 四类型（user/feedback/topic/reference）× 三层权重（permanent/contextual/temporary），分层预算分配（40%/45%/15%）、关键词匹配 + 权重排序智能注入、Token 预算可配置、置顶/归档、导入导出 |
-| ⚡ **Skill 技能** | **deepseek++ 完整默认技能库（10 个）** + 自定义技能，`/技能名` 触发，记忆联动，使用权重排序 |
+| 🔎 **网络工具** | `web_search`（Bing 搜索，无 API key）+ `web_fetch`（网页可视文本提取），模型自动调用 |
+| 📄 **保存项** | 保存常用 prompt / 片段 / 书签，搜索与标签管理，JSON 导入导出 |
+| 💾 **对话导出** | 侧栏导出 DeepSeek 会话为 HTML / Markdown / 纯文本 |
+| ⏰ **自动化任务** | cron 5 段 / RRULE 定时任务，自动发送到 DeepSeek 独立会话执行，手动/定时/状态追踪 |
+| ⚡ **Skill 技能** | **deepseek++ 完整默认技能库（10 个）** + 自定义技能，`/技能名` 触发，记忆联动 |
 | 📋 **系统提示词预设** | 自定义预设、一键激活、首条注入、与角色卡/记忆/技能共存 |
 | 💬 **对话管理** | 列出/删除/重命名 DeepSeek 会话、批量删除、查看历史 |
-| 🔌 **MCP 工具** | Streamable HTTP / HTTP POST / SSE 传输，initialize → tools/list → tools/call 标准生命周期，服务增删改/刷新工具 |
+| 🔌 **MCP 工具** | Streamable HTTP / HTTP POST / SSE 传输，initialize → tools/list → tools/call 标准生命周期 |
 | ⚙️ **设置** | 记忆 Token 预算、背景图（URL/上传/透明度）、WebDAV 同步配置 |
 
 源码仓库：<https://github.com/wwwangzilin/deepseek-gal-tavern>
@@ -29,11 +33,15 @@
 - 打开 chat.deepseek.com，页面被 Galgame 舞台覆盖：深色夜晚背景（内置卧室场景图）+ 角色立绘 + 大对话框 + 打字机台词。
 - 顶部可切换角色卡；输入台词后，DeepSeek 以该角色身份回复，台词逐字打出，点击文本框可翻页/快进。
 - 左下角浮动按钮可一键切换 **GAL 酒馆界面 ↔ DeepSeek 原版界面**。
-- 点击扩展图标打开**侧栏**：角色卡 / 记忆 / Skill / 预设 / 对话 / MCP / 设置七个页面。
+- 点击扩展图标打开**侧栏**：角色卡 / 记忆 / 保存项 / Skill / 预设 / 对话 / 自动化 / MCP / 设置九个页面。
 - 历史面板保留本会话对话；刷新页面后自动从 DeepSeek 历史接口恢复对话。
 - 角色卡可上传立绘、自定义性格/场景/示例对话/开场白/附加系统指令；侧栏「角色卡」页可新建/编辑/切换/删除。
 - 思考过程只闪动「思考中」指示；每 60 秒自动总结对话情绪并调节角色回应。
-- `/技能名 参数` 启用技能（内置 10 个 deepseek++ 默认技能：memory/ultra-think/frontend-design/doc-coauthoring/brand-guidelines/skill-creator/algorithmic-art/canvas-design/pptx-design/roleplay）；对话中模型会自动把新学的角色设定写回角色卡（「📖 角色卡已补充」提示）。
+- `/技能名 参数` 启用技能（内置 10 个 deepseek++ 默认技能）；对话中模型会自动把新学的角色设定写回角色卡。
+- **联网搜索**：模型可调用 `web_search`（Bing 搜索）与 `web_fetch`（网页提取）获取实时信息。
+- **对话导出**：侧栏对话页可导出会话为 HTML / Markdown / 纯文本。
+- **保存项**：侧栏保存常用 prompt、片段、书签，支持搜索与标签。
+- **自动化任务**：侧栏创建定时任务（cron 5 段 / RRULE），自动发送到 DeepSeek 执行，最小间隔 15 分钟。
 
 ## 安装（开发者模式加载）
 

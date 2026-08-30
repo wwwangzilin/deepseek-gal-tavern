@@ -8,6 +8,10 @@ importScripts(
   'core/memory.js',
   'core/presets.js',
   'core/tools.js',
+  'core/network.js',
+  'core/saved-items.js',
+  'core/export.js',
+  'core/automation.js',
   'core/mcp.js',
   'core/sync.js',
 )
@@ -18,6 +22,7 @@ const CONVERSATION_SESSION_CACHE_KEY = 'dsg_conversation_session_cache'
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
   globalThis.DSG_MEMORY.archiveStaleMemories().catch(() => {})
+  startAutomationScheduler()
 })
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -43,7 +48,18 @@ async function handleMessage(message, sender) {
     case 'DELETE_PRESET': { const { id } = message.payload || {}; await globalThis.DSG_PRESET.deletePreset(id); await broadcastStateUpdate(sender.tab && sender.tab.id); return { ok: true } }
     case 'SET_ACTIVE_PRESET': { const { id } = message.payload || {}; await globalThis.DSG_PRESET.setActivePresetId(id || null); if (id) await globalThis.DSG_PRESET.touchPreset(id); await broadcastStateUpdate(sender.tab && sender.tab.id); return { ok: true } }
     case 'GET_ACTIVE_PRESET': return globalThis.DSG_PRESET.getActivePreset()
-    case 'EXECUTE_TOOL_CALL': { const call = message.payload; const result = await globalThis.DSG_TOOL.executeLocalToolCall(call); await globalThis.DSG_TOOL.addToolCallHistory({ call, result, source: 'manual_chat' }); await broadcastStateUpdate(sender.tab && sender.tab.id); return result }
+    case 'EXECUTE_TOOL_CALL': { const call = message.payload; let result; if (globalThis.DSG_NETWORK && call && globalThis.DSG_NETWORK.isWebToolName(call.name)) { result = await globalThis.DSG_NETWORK.executeWebToolCall(call) } else { result = await globalThis.DSG_TOOL.executeLocalToolCall(call); await broadcastStateUpdate(sender.tab && sender.tab.id) } await globalThis.DSG_TOOL.addToolCallHistory({ call, result, source: 'manual_chat' }); return result }
+    case 'GET_SAVED_ITEMS': return globalThis.DSG_SAVED.getAllSavedItems()
+    case 'SAVE_SAVED_ITEM': { const item = await globalThis.DSG_SAVED.saveSavedItem(message.payload); return item }
+    case 'DELETE_SAVED_ITEM': { const { id } = message.payload || {}; await globalThis.DSG_SAVED.deleteSavedItem(id); return { ok: true } }
+    case 'SEARCH_SAVED_ITEMS': { const { query } = message.payload || {}; return globalThis.DSG_SAVED.searchSavedItems(query) }
+    case 'REPLACE_ALL_SAVED_ITEMS': { await globalThis.DSG_SAVED.replaceAllSavedItems(message.payload || []); return { ok: true } }
+    case 'EXPORT_CONVERSATION': { const { sessionId, format } = message.payload || {}; const messages = await sendDeepSeekTabMessage({ type: 'DS_GET_SESSION_HISTORY', payload: { id: sessionId } }); const sessions = [{ title: '对话 ' + sessionId, updatedAt: Date.now(), messages: messages || [] }]; return globalThis.DSG_EXPORT.buildExportFile({ sessions }, format || 'html') }
+    case 'GET_AUTOMATION_TASKS': return globalThis.DSG_AUTOMATION.getAllTasks()
+    case 'SAVE_AUTOMATION_TASK': { const task = await globalThis.DSG_AUTOMATION.saveTask(message.payload); return task }
+    case 'DELETE_AUTOMATION_TASK': { const { id } = message.payload || {}; await globalThis.DSG_AUTOMATION.deleteTask(id); return { ok: true } }
+    case 'RUN_AUTOMATION_TASK': { const { id } = message.payload || {}; const tasks = await globalThis.DSG_AUTOMATION.getAllTasks(); const task = tasks.find((t) => t.id === id); if (!task) return { ok: false, error: '任务不存在' }; const result = await globalThis.DSG_AUTOMATION.runTaskNow(task, sendDeepSeekTabMessage); return result }
+    case 'VALIDATE_AUTOMATION_SCHEDULE': { const result = globalThis.DSG_AUTOMATION.validateSchedule(message.payload); return result }
     case 'GET_TOOL_CALL_HISTORY': { const { limit } = (message.payload || {}); return globalThis.DSG_TOOL.getToolCallHistory(limit) }
     case 'CLEAR_TOOL_CALL_HISTORY': await globalThis.DSG_TOOL.clearToolCallHistory(); return { ok: true }
     case 'GET_CONFIG': return { version: '2.0.0' }
@@ -137,4 +153,33 @@ async function broadcastStateUpdate(excludeTabId) {
 async function broadcastMcpServersUpdate(excludeTabId) {
   const servers = await globalThis.DSG_MCP.getAllMcpServers()
   await broadcastToTabs({ type: 'MCP_SERVERS_UPDATED', servers }, excludeTabId)
+}
+
+// ── 自动化任务调度器（每分钟检查一次到期的定时任务）──────────────
+let schedulerStarted = false
+function startAutomationScheduler() {
+  if (schedulerStarted) return
+  schedulerStarted = true
+  setInterval(async () => {
+    try {
+      const tasks = await globalThis.DSG_AUTOMATION.getAllTasks()
+      const now = Date.now()
+      for (const task of tasks) {
+        if (!task.enabled || task.schedule.kind === 'manual') continue
+        // 到点且未在运行 → 触发
+        if (task.nextRunAt && task.nextRunAt <= now && task.lastStatus !== 'running') {
+          const result = await globalThis.DSG_AUTOMATION.runTaskNow(task, sendDeepSeekTabMessage)
+          // 计算下一次
+          const next = globalThis.DSG_AUTOMATION.calculateNextRunAt(task, Date.now())
+          await globalThis.DSG_AUTOMATION.updateTaskStatus(task.id, {
+            nextRunAt: next && !next.error ? next : null,
+            lastStatus: result.ok ? 'success' : 'error',
+            lastError: result.ok ? null : result.error,
+          })
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }, 60000) // 每 60 秒
 }
